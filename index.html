@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
+</head>
+<body>
+<title>Arb Bankroll Tracker</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: sticky ledger bar (totals + currency + save) over three tabbed sections: Money, Matches, Planner */
+:root{
+  --bg:#eef2f1; --surface:#ffffff; --surface-2:#f5f8f7; --ink:#14211f; --muted:#5b6b68; --line:#d5dfdc;
+  --accent:#0d6b62; --accent-soft:#d9eeea; --accent-ink:#ffffff;
+  --good:#1d7a3e; --good-soft:#e1f2e6; --bad:#b4372b; --bad-soft:#f8e3e0; --warn:#9a6a00; --warn-soft:#fbf0d6;
+  --f-display:"Archivo","Helvetica Neue",Arial,sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f1716; --surface:#172221; --surface-2:#1c2928; --ink:#e3ecea; --muted:#94a6a2; --line:#2a3a38;
+  --accent:#3fb8a9; --accent-soft:#163a36; --accent-ink:#06201d;
+  --good:#5cc982; --good-soft:#173524; --bad:#f07a6c; --bad-soft:#3a1d19; --warn:#e2b44a; --warn-soft:#352a10;
+  color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f1716; --surface:#172221; --surface-2:#1c2928; --ink:#e3ecea; --muted:#94a6a2; --line:#2a3a38;
+  --accent:#3fb8a9; --accent-soft:#163a36; --accent-ink:#06201d;
+  --good:#5cc982; --good-soft:#173524; --bad:#f07a6c; --bad-soft:#3a1d19; --warn:#e2b44a; --warn-soft:#352a10;
+  color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.45}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--surface)}
+.wrap{max-width:1040px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.num,input[type=number]{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0}
+button{font:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* top bar */
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--surface);border-bottom:1px solid var(--line)}
+.bar-in{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;padding-block:12px}
+.brand{font-family:var(--f-display);font-weight:800;font-size:19px;letter-spacing:-.01em;margin-right:auto;display:flex;align-items:center;gap:8px}
+.brand i{display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--accent);transform:rotate(45deg)}
+.tot{display:flex;gap:18px;flex-wrap:wrap}
+.tot div{display:flex;flex-direction:column}
+.tot small{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+.tot b{font-family:var(--f-mono);font-weight:600;font-size:15px}
+.ctl{display:flex;gap:8px;align-items:center}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:2px;background:var(--surface-2)}
+.seg button{border:0;background:none;color:var(--muted);padding:5px 12px;border-radius:999px;font-weight:600}
+.seg button[aria-pressed=true]{background:var(--ink);color:var(--surface)}
+.btn{border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:7px 14px;border-radius:8px;font-weight:600}
+.btn:hover{border-color:var(--muted)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.ghost{background:none}
+.btn.danger{color:var(--bad)}
+.btn.armed{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn.sm{padding:4px 10px;font-size:13px}
+.btn:disabled{opacity:.5;cursor:default}
+.save-state{font-size:12px;color:var(--muted);min-width:7ch}
+.save-state.dirty{color:var(--warn);font-weight:600}
+.tabs{display:flex;gap:4px;border-top:1px solid var(--line)}
+.tabs a{padding:10px 14px;color:var(--muted);text-decoration:none;font-weight:600;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs a[aria-current=page]{color:var(--ink);border-bottom-color:var(--accent)}
+.tabs a span{font-family:var(--f-mono);font-size:12px;color:var(--muted);margin-left:4px}
+
+main{padding-block:22px 60px}
+section{display:flex;flex-direction:column;gap:16px}
+.sec-head{display:flex;align-items:end;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.sec-head h2{font-size:24px;font-weight:800;letter-spacing:-.015em}
+.sec-head p{margin:4px 0 0;color:var(--muted);max-width:62ch}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r)}
+.note{padding:10px 14px;border-radius:8px;font-size:14px}
+.note.warn{background:var(--warn-soft);color:var(--warn)}
+.note.bad{background:var(--bad-soft);color:var(--bad)}
+.note.info{background:var(--accent-soft);color:var(--ink)}
+.note.good{background:var(--good-soft);color:var(--good)}
+.banner{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:space-between}
+
+/* tables */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600;text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+td.r,th.r{text-align:right}
+tfoot td{font-weight:600;background:var(--surface-2);border-top:1px solid var(--line)}
+input[type=text],input[type=number],input[type=datetime-local]{font:inherit;color:var(--ink);background:var(--surface-2);border:1px solid var(--line);border-radius:7px;padding:7px 9px;width:100%;min-width:0}
+input:focus{border-color:var(--accent);outline:none;background:var(--surface)}
+.in-num{max-width:160px}
+.cur-in{position:relative;display:flex;align-items:center}
+.cur-in em{position:absolute;left:9px;font-style:normal;color:var(--muted);font-family:var(--f-mono);font-size:14px;pointer-events:none}
+.cur-in input{padding-left:24px}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
+.pill.lock{background:var(--warn-soft);color:var(--warn)}
+.pill.ok{background:var(--good-soft);color:var(--good)}
+.pill.bad{background:var(--bad-soft);color:var(--bad)}
+.pill.muted{background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
+.muted{color:var(--muted)}
+.empty{padding:28px 16px;text-align:center;color:var(--muted)}
+
+/* match cards */
+.matches{display:grid;gap:16px}
+.match{padding:16px;display:flex;flex-direction:column;gap:14px}
+.m-top{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.m-top h3{font-size:17px;font-weight:700}
+.m-grid{display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:stretch}
+.side{display:grid;grid-template-columns:1fr 92px;gap:8px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
+.side label,.m-opts label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);font-weight:500;min-width:0}
+.side input{background:var(--surface)}
+.vs{align-self:center;font-family:var(--f-display);font-weight:800;color:var(--muted);font-size:13px}
+.m-opts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.calc{border-top:1px dashed var(--line);padding-top:12px;display:flex;flex-direction:column;gap:10px}
+.stakes{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.stake{padding:10px 12px;border-radius:8px;background:var(--accent-soft)}
+.stake small{display:block;font-size:12px;color:var(--muted)}
+.stake b{font-family:var(--f-mono);font-size:20px;font-weight:600}
+.stake .tag{font-size:11px;color:var(--muted)}
+.kv{display:flex;flex-wrap:wrap;gap:6px 22px;font-size:14px}
+.kv span{color:var(--muted)}
+.kv b{font-family:var(--f-mono);font-weight:600}
+.kv .g{color:var(--good)} .kv .x{color:var(--bad)}
+.settle{display:flex;gap:8px;flex-wrap:wrap}
+.gate{position:fixed;inset:0;z-index:20;background:var(--bg);display:grid;place-items:center;padding:16px}
+.gate-card{width:100%;max-width:340px;padding:24px;display:flex;flex-direction:column;gap:10px}
+.gate-card label{font-size:13px;color:var(--muted);margin-top:8px}
+.gate-card input{font:inherit;color:var(--ink);background:var(--surface-2);border:1px solid var(--line);border-radius:7px;padding:9px 10px}
+.own{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px}
+.own-h{grid-column:1/-1;font-size:13px;font-weight:600}
+.own-h .muted{font-weight:400}
+.own label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);font-weight:500;min-width:0}
+.chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chip{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:5px 12px;font-family:var(--f-mono);font-size:13px;font-weight:600}
+.chip span{font-family:var(--f-body);font-weight:400;color:var(--good);margin-left:4px}
+.chip:hover{border-color:var(--accent)}
+.chip.on{background:var(--accent-soft);border-color:var(--accent)}
+details.done summary{cursor:pointer;font-weight:600;padding:12px 16px}
+details.done .tbl-wrap{border-top:1px solid var(--line)}
+
+/* planner */
+.plan{padding:16px;display:flex;flex-direction:column;gap:12px}
+.plan h3{font-size:17px}
+.plan .meta{color:var(--muted);font-size:13px}
+.xfer{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none}
+.xfer li{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;padding:8px 12px;border-radius:8px;background:var(--surface-2);font-size:14px}
+.xfer .arrow{color:var(--accent);font-weight:700}
+.side-a{color:var(--accent);font-weight:600}
+.settings{padding:16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
+.settings label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+.log{margin:0;padding:0;list-style:none;font-size:13px}
+.log li{padding:7px 16px;border-top:1px solid var(--line);display:flex;gap:12px}
+.log time{color:var(--muted);font-family:var(--f-mono);white-space:nowrap}
+
+@media (max-width:640px){
+  .tot{gap:12px;width:100%;order:3}
+  .m-grid{grid-template-columns:1fr}
+  .vs{justify-self:center}
+  .m-opts{grid-template-columns:1fr}
+  .stakes{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<header class="bar">
+  <div class="wrap bar-in">
+    <div class="brand"><i></i>Arb Bankroll</div>
+    <div class="tot" id="totals"></div>
+    <div class="ctl">
+      <div class="seg" role="group" aria-label="Currency">
+        <button id="cur-inr" data-act="cur" data-v="INR" aria-pressed="true">₹</button>
+        <button id="cur-usd" data-act="cur" data-v="USD" aria-pressed="false">$</button>
+      </div>
+      <span class="save-state" id="save-state"></span>
+      <button class="btn pri" id="save-btn" data-act="save">Save</button>
+    </div>
+  </div>
+  <nav class="wrap tabs" aria-label="Sections">
+    <a href="#money" data-tab="money">Money <span id="cnt-acc"></span></a>
+    <a href="#matches" data-tab="matches">Matches <span id="cnt-m"></span></a>
+    <a href="#planner" data-tab="planner">Planner</a>
+  </nav>
+</header>
+
+<div id="gate" class="gate" hidden>
+  <form id="gate-form" class="card gate-card">
+    <div class="brand"><i></i>Arb Bankroll</div>
+    <label for="gate-pw">Password</label>
+    <input type="password" id="gate-pw" autocomplete="current-password" required>
+    <button class="btn pri" type="submit">Open tracker</button>
+    <p id="gate-msg" class="muted" style="margin:0;font-size:13px" role="status"></p>
+  </form>
+</div>
+
+<main class="wrap">
+  <div id="notes" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
+  <section id="tab-money"></section>
+  <section id="tab-matches" hidden></section>
+  <section id="tab-planner" hidden></section>
+</main>
+
+<script>
+(function(){
+const KEY='arb-tracker-v1';
+const DOC='tracker/main';
+const uid=()=>Math.random().toString(36).slice(2,10);
+const r2=x=>Math.round((+x||0)*100)/100;
+const ceil2=x=>Math.ceil(x*100-1e-6)/100;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function newMatch(n){return{id:uid(),name:'Match '+n,teamA:'',oddsA:'',teamB:'',oddsB:'',maxBet:'',pairs:1,time:'',status:'draft',bets:[],winner:null,profit:0}}
+function defaultState(){return{settings:{currency:'INR',rate:93,feeUsd:0.1},accounts:[],matches:[newMatch(1)],log:[],feesPaid:0,matchSeq:1,rev:null}}
+function normalize(d){
+  const s=Object.assign(defaultState(),d||{});
+  s.settings=Object.assign(defaultState().settings,s.settings||{});
+  s.accounts=Array.isArray(s.accounts)?s.accounts:[];
+  s.matches=Array.isArray(s.matches)?s.matches.map(m=>Object.assign(newMatch(1),m)):[];
+  s.log=Array.isArray(s.log)?s.log:[];
+  s.matchSeq=Math.max(s.matchSeq||1,s.matches.length);
+  return s;
+}
+const clone=o=>JSON.parse(JSON.stringify(o));
+
+let S=defaultState(), dirty=false, mode='loading', docRef=null, pendingRemote=null, saving=false, saveAgain=false;
+let armed=null, armTimer=null, lastPlan=[], tab='money', notes={};
+
+/* ---------- money helpers ---------- */
+const isUSD=()=>S.settings.currency==='USD';
+const rate=()=>(+S.settings.rate>0?+S.settings.rate:93);
+const feeInr=()=>r2((+S.settings.feeUsd||0)*rate());
+const toDisp=inr=>isUSD()?inr/rate():inr;
+const fromDisp=v=>isUSD()?v*rate():v;
+const sym=()=>isUSD()?'$':'₹';
+function fmt(inr,signed){
+  const v=toDisp(+inr||0);
+  const s=Math.abs(v).toLocaleString(isUSD()?'en-US':'en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const sign=v<-0.004?'−':(signed&&v>0.004?'+':'');
+  return sign+sym()+s;
+}
+const inVal=inr=>(inr===''||inr==null)?'':r2(toDisp(+inr));
+const accById=id=>S.accounts.find(a=>a.id===id);
+function lockedFor(id){let t=0;for(const m of S.matches)if(m.status==='placed')for(const b of m.bets)if(b.accountId===id)t+=b.stake;return t}
+const teamName=(m,side)=>(side==='A'?m.teamA:m.teamB)||(side==='A'?'Team A':'Team B');
+function fmtTime(t){if(!t)return 'No start time';const d=new Date(t);return isNaN(d)?t:d.toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}
+
+/* ---------- arbitrage maths ---------- */
+function stakes(m){
+  const a=+m.oddsA,b=+m.oddsB,max=+m.maxBet;
+  if(!(a>1&&b>1&&max>0))return null;
+  const lowA=a<=b, oLow=Math.min(a,b), oHigh=Math.max(a,b);
+  const sLow=r2(max), sHigh=r2(max*oLow/oHigh);
+  const sugA=lowA?sLow:sHigh, sugB=lowA?sHigh:sLow;
+  let stakeA=sugA, stakeB=sugB, custom=false;
+  const cA=+m.customA, cB=+m.customB;
+  if(cA>0&&cB>0){stakeA=r2(cA);stakeB=r2(cB);custom=true}
+  return Object.assign(outcome(stakeA,stakeB,a,b),{sugA,sugB,custom,max,isArb:1/a+1/b<1,margin:1/a+1/b,lowSide:lowA?'A':'B'});
+}
+function outcome(stakeA,stakeB,a,b){
+  const total=stakeA+stakeB, retA=stakeA*a, retB=stakeB*b;
+  const profitA=retA-total, profitB=retB-total, profit=Math.min(profitA,profitB);
+  return{stakeA,stakeB,total,retA,retB,ret:Math.min(retA,retB),profitA,profitB,profit,roi:profit/total,bigSide:stakeA>=stakeB?'A':'B'};
+}
+/* round-number stake pairs that keep both outcomes as profitable as possible */
+function roundOptions(m){
+  const st=stakes(m);if(!st||!st.isArb)return[];
+  const a=+m.oddsA,b=+m.oddsB,lowA=st.lowSide==='A';
+  const oLow=Math.min(a,b),oHigh=Math.max(a,b);
+  const steps=isUSD()?[0.5,1,5]:[10,50,100];
+  const out=[],seen=new Set();
+  for(const sd of steps){
+    const R=fromDisp(sd);
+    const topBig=Math.floor(st.max/R+1e-9);
+    let best=null;
+    for(let i=0;i<3;i++){
+      const big=(topBig-i)*R;if(big<=0)break;
+      const ideal=big*oLow/oHigh, base=Math.floor(ideal/R);
+      for(let j=-1;j<=2;j++){
+        const small=(base+j)*R;if(small<=0)continue;
+        const sA=r2(lowA?big:small), sB=r2(lowA?small:big);
+        const o=outcome(sA,sB,a,b);
+        if(!best||o.profit>best.profit+1e-9)best=o;
+      }
+    }
+    if(best&&best.profit>0){const k=best.stakeA+'/'+best.stakeB;if(!seen.has(k)){seen.add(k);out.push(Object.assign(best,{step:sd}))}}
+  }
+  return out;
+}
+
+/* ---------- planner ---------- */
+function tryAssign(bal,P,st,fee,ids){
+  const sorted=[...ids].sort((x,y)=>bal[y]-bal[x]);
+  if(sorted.length<2*P)return{fail:'accounts'};
+  const big=st.bigSide, small=big==='A'?'B':'A';
+  const roles=[];for(let i=0;i<P;i++)roles.push(big);for(let i=0;i<P;i++)roles.push(small);
+  const stakeOf=s=>s==='A'?st.stakeA:st.stakeB;
+  const assign=roles.map((side,i)=>({accountId:sorted[i],side,stake:stakeOf(side)}));
+  const need={};assign.forEach(x=>need[x.accountId]=x.stake);
+  const deficits=[],surplus=[];
+  for(const id of ids){const s=bal[id]-(need[id]||0);if(s< -0.004)deficits.push({id,amt:ceil2(-s)});else if(s>0.004)surplus.push({id,amt:s})}
+  deficits.sort((x,y)=>y.amt-x.amt);
+  const transfers=[];
+  for(const d of deficits){
+    let left=d.amt;
+    while(left>0.004){
+      surplus.sort((x,y)=>y.amt-x.amt);
+      const donor=surplus.find(s=>s.amt-fee>0.004);
+      if(!donor)return{fail:'money'};
+      const amt=r2(Math.min(left,donor.amt-fee));
+      if(amt<=0)return{fail:'money'};
+      transfers.push({from:donor.id,to:d.id,amount:amt});
+      donor.amt-=amt+fee;left=r2(left-amt);
+    }
+  }
+  const nb={...bal};
+  for(const t of transfers){nb[t.from]-=t.amount+fee;nb[t.to]+=t.amount}
+  for(const x of assign)nb[x.accountId]-=x.stake;
+  return{P,bets:assign,transfers,newBal:nb};
+}
+function plan(){
+  const fee=feeInr();
+  const ids=S.accounts.map(a=>a.id);
+  let bal={};S.accounts.forEach(a=>bal[a.id]=Math.max(0,+a.balance||0));
+  const drafts=S.matches.filter(m=>m.status==='draft').map((m,i)=>({m,i})).sort((x,y)=>{
+    const tx=x.m.time||'~',ty=y.m.time||'~';return tx<ty?-1:tx>ty?1:x.i-y.i}).map(x=>x.m);
+  const out=[];
+  for(const m of drafts){
+    const st=stakes(m);
+    const req=Math.floor(ids.length/2); // most pairs your accounts allow
+    if(!st||!req){out.push({m,st,req,P:0,bets:[],transfers:[],reason:!st?'incomplete':'accounts'});continue}
+    let res=null;
+    for(let P=req;P>=1;P--){const r=tryAssign(bal,P,st,fee,ids);if(!r.fail){res=r;break}}
+    const need=(!res||res.P<req)?shortfall(bal,req,st,fee,ids):null;
+    if(res){bal=res.newBal;out.push({m,st,req,...res,need})}
+    else out.push({m,st,req,P:0,bets:[],transfers:[],need});
+  }
+  return{rows:out,left:bal};
+}
+/* smallest deposit (into the richest account) that lets every pair bet */
+function shortfall(bal,P,st,fee,ids){
+  const to=[...ids].sort((x,y)=>bal[y]-bal[x])[0];
+  const ok=x=>!tryAssign({...bal,[to]:bal[to]+x},P,st,fee,ids).fail;
+  let lo=0,hi=P*st.total+fee*2*P+1;
+  for(let i=0;i<5&&!ok(hi);i++)hi*=2;
+  if(!ok(hi))return null;
+  for(let i=0;i<40;i++){const mid=(lo+hi)/2;if(ok(mid))hi=mid;else lo=mid}
+  return{amt:Math.ceil(hi),to};
+}
+
+/* ---------- rendering ---------- */
+function renderTotals(){
+  const free=S.accounts.reduce((t,a)=>t+(+a.balance||0),0);
+  let locked=0;for(const m of S.matches)if(m.status==='placed')for(const b of m.bets)locked+=b.stake;
+  const profit=S.matches.reduce((t,m)=>t+(m.status==='settled'?(+m.profit||0):0),0)-(+S.feesPaid||0);
+  document.getElementById('totals').innerHTML=
+    `<div><small>Free</small><b>${fmt(free)}</b></div>`+
+    `<div><small>In bets</small><b>${fmt(locked)}</b></div>`+
+    `<div><small>Total</small><b>${fmt(free+locked)}</b></div>`+
+    `<div><small>Profit after fees</small><b style="color:var(${profit>=0?'--good':'--bad'})">${fmt(profit,true)}</b></div>`;
+  document.getElementById('cnt-acc').textContent=S.accounts.length;
+  document.getElementById('cnt-m').textContent=S.matches.filter(m=>m.status!=='settled'&&m.status!=='void').length;
+  document.getElementById('cur-inr').setAttribute('aria-pressed',!isUSD());
+  document.getElementById('cur-usd').setAttribute('aria-pressed',isUSD());
+}
+function renderSaveState(state){
+  const el=document.getElementById('save-state');
+  const where=mode==='local'?' on this device':'';
+  if(state==='saving'){el.textContent='Saving…';el.className='save-state'}
+  else if(state==='error'){el.textContent='Save failed';el.className='save-state dirty'}
+  else if(dirty){el.textContent='Unsaved changes';el.className='save-state dirty'}
+  else if(mode==='loading'){el.textContent='Loading…';el.className='save-state'}
+  else{el.textContent='Saved'+where;el.className='save-state'}
+}
+function renderNotes(){
+  const n=[];
+  if(mode==='local')n.push(`<div class="note info">Saving on this device only. Other devices won't see these changes.</div>`);
+  if(notes.slow)n.push(`<div class="note warn">${esc(notes.slow)}</div>`);
+  if(notes.err)n.push(`<div class="note bad">${esc(notes.err)}</div>`);
+  if(pendingRemote)n.push(`<div class="note warn banner"><span>Someone else saved new data while you were editing.</span><span style="display:flex;gap:8px"><button class="btn sm" data-act="load-remote">Load their version</button><button class="btn sm ghost" data-act="keep-mine">Keep mine</button></span></div>`);
+  document.getElementById('notes').innerHTML=n.join('');
+}
+function moneyTotalsRow(){
+  let free=0,lock=0;S.accounts.forEach(a=>{free+=+a.balance||0;lock+=lockedFor(a.id)});
+  return `<td>Total</td><td class="r num">${fmt(free)}</td><td class="r num">${fmt(lock)}</td><td class="r num">${fmt(free+lock)}</td><td></td>`;
+}
+function renderMoney(){
+  const el=document.getElementById('tab-money');
+  const rows=S.accounts.map(a=>{
+    const l=lockedFor(a.id);
+    return `<tr>
+      <td><input type="text" id="acc-n-${a.id}" data-acc="${a.id}" data-f="name" value="${esc(a.name)}" placeholder="Account name" aria-label="Account name"></td>
+      <td class="r"><div class="cur-in in-num" style="margin-left:auto"><em>${sym()}</em><input type="number" step="0.01" id="acc-b-${a.id}" data-acc="${a.id}" data-f="balance" value="${inVal(a.balance)}" aria-label="Free balance of ${esc(a.name)}"></div></td>
+      <td class="r num">${l>0?`<span class="pill lock">${fmt(l)}</span>`:'<span class="muted">—</span>'}</td>
+      <td class="r num">${fmt((+a.balance||0)+l)}</td>
+      <td class="r"><button class="btn sm ghost danger" data-act="del-acc" data-id="${a.id}">Delete</button></td>
+    </tr>`}).join('');
+  el.innerHTML=`
+  <div class="sec-head"><div><h2>Money</h2><p>Every account and the crypto it holds right now. Free money can be bet or sent to another account. Money in bets comes back when you settle the match.</p></div>
+  <button class="btn pri" data-act="add-acc">+ Add account</button></div>
+  <div class="card tbl-wrap">${S.accounts.length?`<table>
+    <thead><tr><th>Account</th><th class="r">Free balance</th><th class="r">In bets</th><th class="r">Total</th><th></th></tr></thead>
+    <tbody>${rows}</tbody><tfoot><tr id="money-total">${moneyTotalsRow()}</tr></tfoot></table>`
+    :`<div class="empty">No accounts yet. Add each account with the crypto it holds, for example "Madhav, ₹3,039".</div>`}</div>
+  <h3 style="font-size:16px;margin-top:8px">Settings</h3>
+  <div class="card settings">
+    <label>1 US dollar in rupees<div class="cur-in"><em>₹</em><input type="number" step="0.01" id="set-rate" data-set="rate" value="${esc(S.settings.rate)}"></div></label>
+    <label>Fee per transfer (USD)<div class="cur-in"><em>$</em><input type="number" step="0.01" id="set-fee" data-set="feeUsd" value="${esc(S.settings.feeUsd)}"></div><span id="fee-hint" class="num">${'≈ ₹'+feeInr().toFixed(2)+' per transfer'}</span></label>
+    <label>Fees paid so far<b class="num" style="color:var(--ink);font-size:16px;padding-top:6px">${fmt(S.feesPaid||0)}</b></label>
+  </div>
+  ${S.log.length?`<h3 style="font-size:16px;margin-top:8px">Activity</h3><div class="card"><ul class="log" style="margin-top:-1px">${S.log.slice(0,30).map(l=>`<li><time>${esc(new Date(l.at).toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}))}</time><span>${esc(l.text)}</span></li>`).join('')}</ul></div>`:''}`;
+}
+function calcHTML(m){
+  const st=stakes(m);
+  if(!st)return `<p class="muted" style="margin:0">Enter both odds (decimal, like 2.4) and the max bet per side to see the stakes.</p>`;
+  const pr=lastPlan.find(r=>r.m.id===m.id);
+  const P=pr?pr.P:0, maxP=Math.floor(S.accounts.length/2);
+  let warn='';
+  if(!st.isArb)warn=`<div class="note bad">No arbitrage at these odds: 1/${m.oddsA} + 1/${m.oddsB} = ${st.margin.toFixed(3)}, which is 1 or more. You would lose ${fmt(-st.profit)} per pair.</div>`;
+  let fund='';
+  if(pr&&m.status==='draft'){
+    if(maxP===0)fund=`<span class="pill bad">Add at least 2 accounts on the Money tab</span>`;
+    else if(P>=maxP)fund=`<span class="pill ok">Betting from all ${maxP} pair${maxP>1?'s':''}</span>`;
+    else fund=`<span class="pill bad">Betting from ${P} of ${maxP} pairs${pr.need?` · add ${fmt(pr.need.amt)} for all`:''}</span>`;
+  }
+  if(st.custom){
+    if(Math.max(st.stakeA,st.stakeB)>st.max+0.005)warn+=`<div class="note warn">One of your stakes is above the max bet of ${fmt(st.max)}. The bookie may not accept it.</div>`;
+    for(const s of ['A','B']){const p=s==='A'?st.profitA:st.profitB;if(p<0)warn+=`<div class="note bad">With your stakes you lose ${fmt(-p)} per pair if ${esc(teamName(m,s))} wins.</div>`}
+  }
+  const tagFor=s=>st.custom?`your stake · suggested ${fmt(s==='A'?st.sugA:st.sugB)}`:(st.lowSide===s?'max side':'other side');
+  const even=Math.abs(st.profitA-st.profitB)<1;
+  const opts=m.status==='draft'?roundOptions(m):[];
+  const pk=(o)=>`${o.stakeA}/${o.stakeB}`, cur=`${st.stakeA}/${st.stakeB}`;
+  const chips=opts.length?`<div class="chips"><span class="muted" style="font-size:13px">Round numbers:</span>${opts.map(o=>`<button class="chip${st.custom&&pk(o)===cur?' on':''}" data-act="round" data-id="${m.id}" data-a="${o.stakeA}" data-b="${o.stakeB}">${fmt(o.stakeA)} / ${fmt(o.stakeB)} <span>worst case ${fmt(o.profit,true)}</span></button>`).join('')}${st.custom?`<button class="chip" data-act="clear-custom" data-id="${m.id}">Exact (${fmt(st.sugA)} / ${fmt(st.sugB)})</button>`:''}</div>`:'';
+  return `${warn}
+  <div class="stakes">
+    <div class="stake"><small>Bet on ${esc(teamName(m,'A'))} @ ${esc(m.oddsA)}</small><b>${fmt(st.stakeA)}</b> <span class="tag">${tagFor('A')}</span></div>
+    <div class="stake"><small>Bet on ${esc(teamName(m,'B'))} @ ${esc(m.oddsB)}</small><b>${fmt(st.stakeB)}</b> <span class="tag">${tagFor('B')}</span></div>
+  </div>
+  ${chips}
+  <div class="kv">
+    <div><span>Per pair: stake </span><b>${fmt(st.total)}</b></div>
+    ${even?`<div><span>returns </span><b>${fmt(st.ret)}</b></div><div><span>profit </span><b class="${st.profit>=0?'g':'x'}">${fmt(st.profit,true)} (${(st.roi*100).toFixed(1)}%)</b></div>`
+    :`<div><span>if ${esc(teamName(m,'A'))} wins </span><b class="${st.profitA>=0?'g':'x'}">${fmt(st.profitA,true)}</b></div><div><span>if ${esc(teamName(m,'B'))} wins </span><b class="${st.profitB>=0?'g':'x'}">${fmt(st.profitB,true)}</b></div>`}
+  </div>
+  <div class="kv">${P>0?`<div><span>× ${P} pair${P>1?'s':''}: stake </span><b>${fmt(st.total*P)}</b></div><div><span>${even?'profit':'worst-case profit'} </span><b class="${st.profit>=0?'g':'x'}">${fmt(st.profit*P,true)}</b></div><div><span>uses </span><b>${2*P} accounts</b></div>`:''} ${fund}</div>`;
+}
+function draftCard(m){
+  return `<article class="card match" id="mc-${m.id}">
+    <div class="m-top"><h3>${esc(m.name)}</h3><button class="btn sm ghost danger" data-act="del-match" data-id="${m.id}">Delete</button></div>
+    <div class="m-grid">
+      <div class="side"><label>Team A<input type="text" id="m-ta-${m.id}" data-match="${m.id}" data-f="teamA" value="${esc(m.teamA)}" placeholder="Minnesota"></label><label>Odds<input type="number" step="0.01" min="1" id="m-oa-${m.id}" data-match="${m.id}" data-f="oddsA" value="${esc(m.oddsA)}" placeholder="2.40"></label></div>
+      <div class="vs">VS</div>
+      <div class="side"><label>Team B<input type="text" id="m-tb-${m.id}" data-match="${m.id}" data-f="teamB" value="${esc(m.teamB)}" placeholder="Lakers"></label><label>Odds<input type="number" step="0.01" min="1" id="m-ob-${m.id}" data-match="${m.id}" data-f="oddsB" value="${esc(m.oddsB)}" placeholder="2.80"></label></div>
+    </div>
+    <div class="m-opts">
+      <label>Max bet on one side<div class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" id="m-mx-${m.id}" data-match="${m.id}" data-f="maxBet" value="${inVal(m.maxBet)}" placeholder="${isUSD()?'10':'930'}"></div></label>
+      <label>Match starts<input type="datetime-local" id="m-t-${m.id}" data-match="${m.id}" data-f="time" value="${esc(m.time)}"></label>
+    </div>
+    <div class="own">
+      <div class="own-h">Your own stakes <span class="muted">(optional; fill both to use them, or leave empty for the suggested ones)</span></div>
+      <label>On <span id="own-a-${m.id}">${esc(teamName(m,'A'))}</span><div class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" id="m-ca-${m.id}" data-match="${m.id}" data-f="customA" value="${inVal(m.customA)}"></div></label>
+      <label>On <span id="own-b-${m.id}">${esc(teamName(m,'B'))}</span><div class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" id="m-cb-${m.id}" data-match="${m.id}" data-f="customB" value="${inVal(m.customB)}"></div></label>
+    </div>
+    <div class="calc" id="calc-${m.id}">${calcHTML(m)}</div>
+  </article>`;
+}
+function placedCard(m){
+  const rows=m.bets.map(b=>{const a=accById(b.accountId);return `<tr><td>${esc(a?a.name:b.accountName)}</td><td><span class="${b.side==='A'?'side-a':''}">${esc(teamName(m,b.side))}</span> @ ${esc(b.odds)}</td><td class="r num">${fmt(b.stake)}</td><td class="r num">${fmt(b.stake*b.odds)}</td></tr>`}).join('');
+  const st=m.bets.reduce((t,b)=>t+b.stake,0);
+  return `<article class="card match">
+    <div class="m-top"><h3>${esc(m.name)}: ${esc(teamName(m,'A'))} vs ${esc(teamName(m,'B'))}</h3><span class="pill lock">Bets placed · ${fmt(st)} in play</span></div>
+    <div class="muted" style="font-size:13px;margin-top:-8px">${esc(fmtTime(m.time))} · ${m.bets.length/2} pair${m.bets.length/2>1?'s':''}</div>
+    <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Bet on</th><th class="r">Stake</th><th class="r">Pays if wins</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div><div class="muted" style="font-size:13px;margin-bottom:6px">When the match ends, mark the winner. Winning accounts get their payout added to their free balance.</div>
+    <div class="settle">
+      <button class="btn pri" data-act="settle" data-id="${m.id}" data-side="A">${esc(teamName(m,'A'))} won</button>
+      <button class="btn pri" data-act="settle" data-id="${m.id}" data-side="B">${esc(teamName(m,'B'))} won</button>
+      <button class="btn ghost" data-act="void" data-id="${m.id}">Void (refund all stakes)</button>
+    </div></div>
+  </article>`;
+}
+function renderMatches(){
+  const el=document.getElementById('tab-matches');
+  const drafts=S.matches.filter(m=>m.status==='draft');
+  const placed=S.matches.filter(m=>m.status==='placed');
+  const done=S.matches.filter(m=>m.status==='settled'||m.status==='void');
+  el.innerHTML=`
+  <div class="sec-head"><div><h2>Matches</h2><p>Enter both teams, their decimal odds and the most you can bet on one side. The max goes on the lower odds; the other side gets the stake that pays out the same whichever team wins.</p></div>
+  <button class="btn pri" data-act="add-match">+ Add match</button></div>
+  ${placed.length?`<h3 style="font-size:16px">Waiting for result</h3><div class="matches">${placed.map(placedCard).join('')}</div>`:''}
+  ${placed.length&&drafts.length?`<h3 style="font-size:16px">Planning</h3>`:''}
+  <div class="matches">${drafts.map(draftCard).join('')||`<div class="card empty">No matches being planned. Add a match to work out stakes.</div>`}</div>
+  ${done.length?`<details class="card done"><summary>Finished matches (${done.length})</summary><div class="tbl-wrap"><table><thead><tr><th>Match</th><th>Result</th><th class="r">Staked</th><th class="r">Profit</th></tr></thead><tbody>${
+    done.slice().reverse().map(m=>`<tr><td>${esc(teamName(m,'A'))} vs ${esc(teamName(m,'B'))}<div class="muted" style="font-size:12px">${esc(fmtTime(m.time))}</div></td><td>${m.status==='void'?'<span class="pill muted">Void</span>':`<span class="pill ok">${esc(teamName(m,m.winner))} won</span>`}</td><td class="r num">${fmt(m.bets.reduce((t,b)=>t+b.stake,0))}</td><td class="r num" style="color:var(${(+m.profit||0)>=0?'--good':'--bad'})">${fmt(m.profit||0,true)}</td></tr>`).join('')
+  }</tbody></table></div></details>`:''}`;
+}
+function renderPlanner(){
+  const el=document.getElementById('tab-planner');
+  const {rows,left}=planCache;
+  const fee=feeInr();
+  const cards=rows.map((r,i)=>{
+    const m=r.m;
+    const title=`${esc(teamName(m,'A'))} vs ${esc(teamName(m,'B'))}`;
+    if(r.reason==='incomplete')return `<div class="card plan"><h3>${esc(m.name)}: ${title}</h3><div class="muted">Fill in both odds and the max bet on the Matches tab first.</div></div>`;
+    if(r.reason==='accounts')return `<div class="card plan"><h3>${esc(m.name)}: ${title}</h3><div class="muted">Add at least 2 accounts on the Money tab. Each pair is two accounts betting on opposite teams.</div></div>`;
+    const addTxt=r.need?`Add <b class="num">${fmt(r.need.amt)}</b> to ${esc(accById(r.need.to)?.name||'an account')} to bet from all ${r.req} pairs (${2*r.req} accounts).`:'';
+    const short=r.P<r.req?`<div class="note ${r.P?'warn':'bad'}">${r.P?`Free money covers ${r.P} of your ${r.req} pairs.`:`Not enough free money for even one pair${rows.indexOf(r)>0?' after the earlier matches':''}.`} ${addTxt}</div>`:'';
+    if(!r.P)return `<div class="card plan"><h3>${esc(m.name)}: ${title}</h3><div class="meta">${esc(fmtTime(m.time))}</div>${short}</div>`;
+    const bets=r.bets.slice().sort((x,y)=>x.side<y.side?-1:1).map(b=>`<tr><td>${esc(accById(b.accountId)?.name)}</td><td><span class="${b.side==='A'?'side-a':''}">${esc(teamName(m,b.side))}</span> @ ${esc(b.side==='A'?m.oddsA:m.oddsB)}</td><td class="r num">${fmt(b.stake)}</td></tr>`).join('');
+    const xf=r.transfers.length?`<ul class="xfer">${r.transfers.map(t=>`<li><b>${esc(accById(t.from)?.name)}</b><span class="arrow">→</span><b>${esc(accById(t.to)?.name)}</b><span class="num">${fmt(t.amount)}</span><span class="muted">+ ${fmt(fee)} fee</span></li>`).join('')}</ul>`:`<div class="note good">No transfers needed. Every account already has enough.</div>`;
+    const profit=r.st.profit*r.P, feeTot=fee*r.transfers.length;
+    return `<div class="card plan">
+      <div class="m-top"><div><h3>${i+1}. ${esc(m.name)}: ${title}</h3><div class="meta">${esc(fmtTime(m.time))} · betting from ${r.P} of ${r.req} pair${r.req>1?'s':''} · ${fmt(r.st.total*r.P)} staked</div></div>
+      <button class="btn pri" data-act="place" data-id="${m.id}">Mark bets placed</button></div>
+      ${short}
+      <div><div class="muted" style="font-size:13px;margin-bottom:6px">1. Make these transfers first${r.transfers.length?` (${r.transfers.length})`:''}</div>${xf}</div>
+      <div><div class="muted" style="font-size:13px;margin-bottom:6px">2. Then place these bets</div>
+      <div class="tbl-wrap card"><table><thead><tr><th>Account</th><th>Bet on</th><th class="r">Stake</th></tr></thead><tbody>${bets}</tbody></table></div></div>
+      <div class="kv"><div><span>Locked-in profit </span><b class="${profit>=0?'g':'x'}">${fmt(profit,true)}</b></div><div><span>fees </span><b>${fmt(feeTot)}</b></div><div><span>net </span><b class="${profit-feeTot>=0?'g':'x'}">${fmt(profit-feeTot,true)}</b></div></div>
+    </div>`}).join('');
+  const leftRows=S.accounts.map(a=>`<tr><td>${esc(a.name)}</td><td class="r num">${fmt(a.balance||0)}</td><td class="r num">${fmt(left[a.id]??0)}</td></tr>`).join('');
+  el.innerHTML=`
+  <div class="sec-head"><div><h2>Planner</h2><p>Uses the free balances on the Money tab and fills matches earliest first, using as many pairs as the money allows (your ${S.accounts.length} accounts make ${Math.floor(S.accounts.length/2)} pairs at most). Each account bets once per match, and each pair is two different accounts on opposite sides. Transfers are kept as few as possible, since each one costs ${fmt(fee)}.</p></div></div>
+  ${!S.accounts.length?`<div class="card empty">Add your accounts on the Money tab first.</div>`:''}
+  ${rows.length?cards:`<div class="card empty">No matches are being planned. Add one on the Matches tab.</div>`}
+  ${S.accounts.length&&rows.some(r=>r.P)?`<h3 style="font-size:16px;margin-top:8px">Free money after these bets</h3><div class="card tbl-wrap"><table><thead><tr><th>Account</th><th class="r">Free now</th><th class="r">Left after plan</th></tr></thead><tbody>${leftRows}</tbody></table></div>`:''}
+  <p class="muted" style="font-size:13px;margin:0">Money from a finished match is only counted once you mark the winner on the Matches tab, so the planner never spends winnings you don't have yet.</p>`;
+}
+let planCache={rows:[],left:{}};
+function recompute(){planCache=plan();lastPlan=planCache.rows}
+function renderAll(){
+  recompute();renderTotals();renderSaveState();renderNotes();renderMoney();renderMatches();renderPlanner();showTab();
+}
+function refreshLight(){
+  recompute();renderTotals();renderSaveState();
+  S.matches.forEach(m=>{const c=document.getElementById('calc-'+m.id);if(c)c.innerHTML=calcHTML(m);
+    const oa=document.getElementById('own-a-'+m.id),ob=document.getElementById('own-b-'+m.id);
+    if(oa)oa.textContent=teamName(m,'A');if(ob)ob.textContent=teamName(m,'B')});
+  const mt=document.getElementById('money-total');if(mt)mt.innerHTML=moneyTotalsRow();
+  const fh=document.getElementById('fee-hint');if(fh)fh.textContent='≈ ₹'+feeInr().toFixed(2)+' per transfer';
+  renderPlanner();
+}
+function showTab(){
+  for(const t of ['money','matches','planner']){
+    document.getElementById('tab-'+t).hidden=t!==tab;
+    document.querySelector(`[data-tab="${t}"]`).setAttribute('aria-current',t===tab?'page':'false');
+  }
+}
+function readHash(){const h=location.hash.slice(1);tab=['money','matches','planner'].includes(h)?h:'money';showTab()}
+window.addEventListener('hashchange',()=>{readHash();if(tab==='planner'){recompute();renderPlanner()}});
+
+/* ---------- state changes ---------- */
+function markDirty(){dirty=true;renderSaveState()}
+function addLog(text){S.log.unshift({at:new Date().toISOString(),text});S.log=S.log.slice(0,200)}
+
+document.addEventListener('input',e=>{
+  const t=e.target;
+  if(t.dataset.acc){
+    const a=accById(t.dataset.acc);if(!a)return;
+    if(t.dataset.f==='name')a.name=t.value;
+    else a.balance=t.value===''?0:r2(fromDisp(+t.value));
+    markDirty();refreshLight();
+  }else if(t.dataset.match){
+    const m=S.matches.find(x=>x.id===t.dataset.match);if(!m)return;
+    const f=t.dataset.f;
+    if(f==='maxBet'||f==='customA'||f==='customB')m[f]=t.value===''?'':fromDisp(+t.value);
+    else if(f==='oddsA'||f==='oddsB')m[f]=t.value===''?'':+t.value;
+    else if(f==='pairs')m.pairs=t.value===''?'':Math.max(0,Math.floor(+t.value));
+    else m[f]=t.value;
+    markDirty();refreshLight();
+  }else if(t.dataset.set){
+    S.settings[t.dataset.set]=t.value===''?'':+t.value;
+    markDirty();refreshLight();renderTotals();
+  }
+});
+document.addEventListener('change',e=>{
+  // re-render after a field is committed, so team names in labels update
+  if(e.target.dataset.match&&(e.target.dataset.f==='teamA'||e.target.dataset.f==='teamB'))refreshLight();
+  if(e.target.dataset.set==='rate'){const y=scrollY;renderAll();scrollTo(0,y)}
+});
+
+function confirmTwice(btn,key,label){
+  if(armed===key){armed=null;clearTimeout(armTimer);return true}
+  document.querySelectorAll('.btn.armed').forEach(b=>{b.classList.remove('armed');if(b.dataset.orig)b.textContent=b.dataset.orig});
+  armed=key;btn.dataset.orig=btn.textContent;btn.textContent=label;btn.classList.add('armed');
+  clearTimeout(armTimer);armTimer=setTimeout(()=>{armed=null;btn.classList.remove('armed');btn.textContent=btn.dataset.orig},4000);
+  return false;
+}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-act]');if(!b)return;
+  const act=b.dataset.act,id=b.dataset.id;
+  const y=scrollY;
+  if(act==='cur'){S.settings.currency=b.dataset.v;markDirty();renderAll();scrollTo(0,y);return}
+  if(act==='save'){save();return}
+  if(act==='add-acc'){S.accounts.push({id:uid(),name:'',balance:0});markDirty();renderAll();const last=S.accounts[S.accounts.length-1];document.getElementById('acc-n-'+last.id)?.focus();return}
+  if(act==='del-acc'){
+    const a=accById(id);if(!a)return;
+    if(lockedFor(id)>0){b.textContent='Has money in bets';setTimeout(()=>b.textContent='Delete',2500);return}
+    if(!confirmTwice(b,'del-acc-'+id,'Click again to delete'))return;
+    S.accounts=S.accounts.filter(x=>x.id!==id);addLog(`Deleted account ${a.name||'(unnamed)'}`);markDirty();renderAll();scrollTo(0,y);return}
+  if(act==='add-match'){S.matchSeq=(S.matchSeq||S.matches.length)+1;const m=newMatch(S.matchSeq);S.matches.push(m);markDirty();renderAll();document.getElementById('m-ta-'+m.id)?.scrollIntoView({block:'center'});document.getElementById('m-ta-'+m.id)?.focus();return}
+  if(act==='del-match'){if(!confirmTwice(b,'del-m-'+id,'Click again to delete'))return;S.matches=S.matches.filter(x=>x.id!==id);markDirty();renderAll();scrollTo(0,y);return}
+  if(act==='place'){
+    const r=lastPlan.find(x=>x.m.id===id);if(!r||!r.P)return;
+    if(!confirmTwice(b,'place-'+id,`Confirm: ${r.transfers.length} transfer${r.transfers.length===1?'':'s'}, ${r.bets.length} bets`))return;
+    const fee=feeInr(),m=r.m;
+    for(const t of r.transfers){const f=accById(t.from),to=accById(t.to);f.balance=r2(f.balance-t.amount-fee);to.balance=r2(to.balance+t.amount);S.feesPaid=r2((S.feesPaid||0)+fee)}
+    for(const x of r.bets){const a=accById(x.accountId);a.balance=r2(a.balance-x.stake)}
+    m.bets=r.bets.map(x=>({accountId:x.accountId,accountName:accById(x.accountId).name,side:x.side,stake:x.stake,odds:x.side==='A'?+m.oddsA:+m.oddsB}));
+    m.status='placed';m.placedAt=new Date().toISOString();
+    addLog(`Placed ${r.P} pair${r.P>1?'s':''} on ${teamName(m,'A')} vs ${teamName(m,'B')} (${fmt(r.st.total*r.P)} staked, ${r.transfers.length} transfers)`);
+    renderAll();save();return}
+  if(act==='settle'||act==='void'){
+    const m=S.matches.find(x=>x.id===id);if(!m)return;
+    const side=b.dataset.side;
+    if(!confirmTwice(b,act+'-'+id+(side||''),'Click again to confirm'))return;
+    let staked=0,paid=0;
+    for(const x of m.bets){staked+=x.stake;const a=accById(x.accountId);
+      const back=act==='void'?x.stake:(x.side===side?x.stake*x.odds:0);paid+=back;if(a&&back)a.balance=r2(a.balance+back)}
+    m.status=act==='void'?'void':'settled';m.winner=side||null;m.profit=act==='void'?0:r2(paid-staked);m.settledAt=new Date().toISOString();
+    addLog(act==='void'?`Voided ${teamName(m,'A')} vs ${teamName(m,'B')}, stakes refunded`:`${teamName(m,side)} won (${teamName(m,'A')} vs ${teamName(m,'B')}): profit ${fmt(m.profit,true)}`);
+    renderAll();save();return}
+  if(act==='round'||act==='clear-custom'){
+    const m=S.matches.find(x=>x.id===id);if(!m)return;
+    if(act==='round'){m.customA=+b.dataset.a;m.customB=+b.dataset.b}else{m.customA='';m.customB=''}
+    markDirty();renderAll();scrollTo(0,y);return}
+  if(act==='load-remote'){serverRev=pendingRemote.rev||null;S=normalize(clone(pendingRemote));pendingRemote=null;dirty=false;notes.err=null;renderAll();return}
+  if(act==='keep-mine'){serverRev=pendingRemote.rev||null;pendingRemote=null;notes.err=null;markDirty();renderNotes();return}
+});
+
+/* ---------- saving ---------- */
+async function save(){
+  if(saving){saveAgain=true;return}
+  saving=true;
+  S.rev=uid()+Date.now();S.savedAt=new Date().toISOString();
+  const data=clone(S);
+  renderSaveState('saving');
+  try{
+    if(docRef)await docRef.set(data);
+    else if(mode==='server'){
+      const r=await api('PUT',{state:data,baseRev:serverRev});
+      if(r.status===200)serverRev=data.rev;
+      else if(r.status===409){pendingRemote=r.j.state;throw{code:'conflict'}}
+      else if(r.status===401){showGate();throw{message:'enter the password again'}}
+      else throw{message:(r.j&&r.j.error)||('HTTP '+r.status)};
+    }
+    else localStorage.setItem(KEY,JSON.stringify(data));
+    dirty=false;notes.err=null;pendingRemote=null;renderSaveState();
+  }catch(err){
+    notes.err=err&&err.code==='conflict'?'Not saved: someone else saved first. Load their version, or choose Keep mine and press Save again.':
+      err&&err.code==='quota_exceeded'?'Storage is full. Delete some finished matches and save again.':
+      (err&&err.code==='unavailable'?'Could not reach the server. Your changes are still here; press Save again.':'Saving failed: '+((err&&err.message)||err));
+    renderSaveState('error');
+  }
+  renderNotes();saving=false;
+  if(saveAgain){saveAgain=false;save()}
+}
+window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
+
+/* ---------- boot ---------- */
+/* ---------- own server (Vercel /api/state) ---------- */
+let serverRev=null,pw='',pollTimer=null;
+try{pw=localStorage.getItem(KEY+':pw')||''}catch(_){}
+async function api(method,body){
+  const r=await fetch('/api/state',{method,cache:'no-store',headers:{'Content-Type':'application/json','x-app-password':pw},body:body?JSON.stringify(body):undefined});
+  let j=null;try{j=await r.json()}catch(_){}
+  return{status:r.status,j};
+}
+function applyServer(st){
+  const y=scrollY;
+  if(st){S=normalize(clone(st));serverRev=st.rev||null}
+  dirty=false;renderAll();scrollTo(0,y);
+}
+async function poll(){
+  if(mode!=='server'||saving||document.hidden)return;
+  let r;try{r=await api('GET')}catch(_){return}
+  if(r.status===401){showGate();return}
+  if(r.status!==200||!r.j)return;
+  const st=r.j.state;if(!st||st.rev===serverRev||st.rev===S.rev)return;
+  if(dirty){pendingRemote=st;renderNotes()}else applyServer(st);
+}
+function startPolling(){clearInterval(pollTimer);pollTimer=setInterval(poll,15000)}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});
+function showGate(){document.getElementById('gate').hidden=false;setTimeout(()=>document.getElementById('gate-pw').focus(),0)}
+document.getElementById('gate-form').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const msg=document.getElementById('gate-msg');
+  pw=document.getElementById('gate-pw').value;msg.textContent='Checking…';
+  let r;try{r=await api('GET')}catch(_){msg.textContent='Could not reach the server. Check your connection.';return}
+  if(r.status===401){msg.textContent='Wrong password. Try again.';return}
+  if(r.status!==200){msg.textContent=(r.j&&r.j.error)||('Server error '+r.status);return}
+  try{localStorage.setItem(KEY+':pw',pw)}catch(_){}
+  document.getElementById('gate').hidden=true;msg.textContent='';
+  const first=serverRev===null&&!dirty;
+  if(r.j.state&&(first||r.j.state.rev!==serverRev))applyServer(r.j.state);else renderAll();
+  startPolling();
+});
+async function serverBoot(){
+  if(!/^https?:$/.test(location.protocol))return false;
+  let r;try{r=await api('GET')}catch(_){return false}
+  if(!r.j||r.status===404||r.status===405)return false;
+  mode='server';
+  if(r.status===401){renderAll();showGate();return true}
+  if(r.status!==200){notes.err=r.j.error||('Server error '+r.status);renderAll();return true}
+  if(r.j.state)applyServer(r.j.state);else renderAll();
+  startPolling();return true;
+}
+
+async function boot(){
+  readHash();renderAll();
+  let db=null;
+  try{db=window.claude&&window.claude.use?await window.claude.use('db'):null}catch(_){db=null}
+  if(!db&&await serverBoot())return;
+  if(!db){
+    mode='local';
+    try{const raw=localStorage.getItem(KEY);if(raw)S=normalize(JSON.parse(raw))}catch(_){}
+    renderAll();return;
+  }
+  mode='db';docRef=db.doc(DOC);
+  let confirmed=false;
+  const t=setTimeout(()=>{if(!confirmed){notes.slow='Saved data can’t be reached yet. What you see may be out of date.';renderNotes()}},10000);
+  docRef.onSnapshot(snap=>{
+    if(!snap.metadata.fromCache){confirmed=true;clearTimeout(t);if(notes.slow){notes.slow=null}}
+    if(snap.exists){
+      const d=snap.data();
+      if(!(d.rev&&d.rev===S.rev)){
+        if(dirty){pendingRemote=d}
+        else{const y=scrollY;S=normalize(clone(d));renderAll();scrollTo(0,y);return}
+      }
+    }
+    renderSaveState();renderNotes();
+  },err=>{clearTimeout(t);notes.err='Lost connection to saved data ('+(err&&err.code||'error')+'). Reload the page to reconnect.';renderNotes()});
+}
+boot();
+
+/* expose pure functions for testing */
+window.__arb={stakes,tryAssign,shortfall,roundOptions,setCur:c=>{S.settings.currency=c}};
+})();
+</script>
+
+</body>
+</html>
