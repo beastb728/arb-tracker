@@ -603,13 +603,14 @@ function renderPlanner(){
     const firstBettor=r.bets[0]?.accountId;
     const xfRows=r.transfers.map((t,k)=>`<li><b>${esc(accById(t.from)?.name)}</b><span class="arrow">→</span><b>${esc(accById(t.to)?.name)}</b><span class="cur-in xf-amt"><em>${sym()}</em><input type="number" step="0.01" min="0" inputmode="decimal" value="${inVal(t.amount)}" data-xf-m="${m.id}" data-xf-i="${k}" aria-label="Amount ${esc(accById(t.from)?.name)} sends to ${esc(accById(t.to)?.name)}"></span><span class="muted">+ ${fmt(fee)} fee</span><button class="btn sm ghost" data-act="xf-del" data-id="${m.id}" data-i="${k}">Remove</button></li>`).join('');
     const addRow=`<li class="xf-add"><span class="muted" style="font-size:13px">Add a transfer:</span><select id="xf-from-${m.id}" aria-label="From">${opts(S.accounts.find(a=>!r.bets.some(b=>b.accountId===a.id))?.id)}</select><span class="arrow">→</span><select id="xf-to-${m.id}" aria-label="To">${opts(firstBettor)}</select><span class="cur-in xf-amt"><em>${sym()}</em><input type="number" step="0.01" min="0" inputmode="decimal" id="xf-amt-${m.id}" placeholder="amount" aria-label="Amount"></span><button class="btn sm" data-act="xf-add" data-id="${m.id}">Add</button></li>`;
-    const negNote=r.neg&&r.neg.length?`<div class="note bad">With these transfers, ${r.neg.map(n=>`<b>${esc(accById(n.id)?.name)}</b> is ${fmt(n.amt)} short`).join(', ')}. Change the amounts, add a transfer, or go back to the suggested ones.</div>`:'';
+    const negTot=r.neg?r.neg.reduce((t,n)=>t+n.amt,0):0;
+    const negNote=r.neg&&r.neg.length?`<div class="note warn">With these transfers, ${r.neg.map(n=>`<b>${esc(accById(n.id)?.name)}</b> is ${fmt(n.amt)} short`).join(', ')}. Did ${r.neg.length>1?'these accounts':'this account'} have that extra money (from winnings, cashback, or anything the tracker doesn't know about)? If yes, press Mark bets placed: the extra ${fmt(negTot)} is added to ${r.neg.length>1?'their balances':'its balance'} first, so nothing goes below zero. If no, change the transfers.</div>`:'';
     const xf=`${r.custom?`<div class="note">You changed these transfers. Amounts are what arrives; the sender also pays the fee.</div>`:''}${negNote}${!r.transfers.length?`<div class="note good" style="margin-bottom:6px">No transfers needed. Every account already has enough.</div>`:''}<ul class="xfer">${xfRows}${addRow}</ul>${r.custom?`<div><button class="btn sm ghost" data-act="xf-reset" data-id="${m.id}">Back to suggested transfers${r.suggested?` (${r.suggested.length})`:''}</button></div>`:''}`;
     const profit=r.st.profit*r.P, feeTot=fee*r.transfers.length, staked=r.bets.reduce((t,b)=>t+b.stake,0);
     const what=[r.C?`${r.C} cover bet${r.C>1?'s':''}`:'',r.P?`${r.P} ${r.placed?'new ':''}pair${r.P>1?'s':''} of ${r.req}`:''].filter(Boolean).join(' + ');
     return `<div class="card plan">
       <div class="m-top"><div><h3>${i+1}. ${head}</h3><div class="meta">${esc(fmtTime(m.time))} · ${what} · ${fmt(staked)} staked</div></div>
-      <button class="btn pri" data-act="place" data-id="${m.id}"${r.neg&&r.neg.length?' disabled title="Fix the transfers first"':''}>Mark bets placed</button></div>
+      <button class="btn pri" data-act="place" data-id="${m.id}">Mark bets placed</button></div>
       ${cover}${short}
       <div><div class="muted" style="font-size:13px;margin-bottom:6px">1. Make these transfers first${r.transfers.length?` (${r.transfers.length})`:''}</div>${xf}</div>
       <div><div class="muted" style="font-size:13px;margin-bottom:6px">2. Then place these bets. If an account can't place its bet, press Can't place and the plan picks another account.</div>
@@ -733,11 +734,14 @@ document.addEventListener('click',e=>{
   if(act==='add-match'){S.matchSeq=(S.matchSeq||S.matches.length)+1;const m=newMatch(S.matchSeq);S.matches.push(m);markDirty();renderAll();document.getElementById('m-ta-'+m.id)?.scrollIntoView({block:'center'});document.getElementById('m-ta-'+m.id)?.focus();return}
   if(act==='del-match'){if(!confirmTwice(b,'del-m-'+id,'Click again to delete'))return;S.matches=S.matches.filter(x=>x.id!==id);markDirty();renderAll();scrollTo(0,y);return}
   if(act==='place'){
-    const r=lastPlan.find(x=>x.m.id===id);if(!r||!r.bets.length||(r.neg&&r.neg.length))return;
-    if(!confirmTwice(b,'place-'+id,`Confirm: ${r.transfers.length} transfer${r.transfers.length===1?'':'s'}, ${r.bets.length} bets`))return;
+    const r=lastPlan.find(x=>x.m.id===id);if(!r||!r.bets.length)return;
+    const neg=r.neg||[],extra=neg.reduce((t,n)=>t+n.amt,0);
+    if(!confirmTwice(b,'place-'+id,neg.length?`Yes, they had ${fmt(extra)} extra: place`:`Confirm: ${r.transfers.length} transfer${r.transfers.length===1?'':'s'}, ${r.bets.length} bets`))return;
     const fee=feeInr(),m=r.m;
+    for(const n of neg){const a=accById(n.id);if(!a)continue;a.balance=r2(a.balance+n.amt);addLog(`Found ${fmt(n.amt)} extra in ${a.name} (not tracked before)`)}
     for(const t of r.transfers){const f=accById(t.from),to=accById(t.to);f.balance=r2(f.balance-t.amount-fee);to.balance=r2(to.balance+t.amount);S.feesPaid=r2((S.feesPaid||0)+fee)}
     for(const x of r.bets){const a=accById(x.accountId);a.balance=r2(a.balance-x.stake)}
+    for(const n of neg){const a=accById(n.id);if(a&&a.balance<0&&a.balance>-0.02)a.balance=0}
     const odds=side=>side==='A'?(r.st.oddsA??+m.oddsA):(r.st.oddsB??+m.oddsB);
     const added=r.bets.map(x=>({accountId:x.accountId,accountName:accById(x.accountId).name,side:x.side,stake:x.stake,odds:odds(x.side),status:'open'}));
     delete m.xfers;
