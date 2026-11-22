@@ -8,8 +8,17 @@ import { timingSafeEqual } from 'node:crypto';
 const KEY = 'arb-tracker:state';
 
 function redisConfig() {
-  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  const env = process.env;
+  let url = env.KV_REST_API_URL || env.UPSTASH_REDIS_REST_URL;
+  let token = env.KV_REST_API_TOKEN || env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) {
+    // The Vercel integration lets you pick a custom prefix, e.g. STORAGE_KV_REST_API_URL.
+    const urlKey = Object.keys(env).find(k => /_REST_API_URL$/.test(k) || /REDIS_REST_URL$/.test(k));
+    if (urlKey) {
+      url = env[urlKey];
+      token = env[urlKey.replace(/_URL$/, '_TOKEN')];
+    }
+  }
   return url && token ? { url, token } : null;
 }
 
