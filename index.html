@@ -125,6 +125,10 @@ input:focus{border-color:var(--accent);outline:none;background:var(--surface)}
 .kv b{font-family:var(--f-mono);font-weight:600}
 .kv .g{color:var(--good)} .kv .x{color:var(--bad)}
 .settle{display:flex;gap:8px;flex-wrap:wrap}
+.bet-cell{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
+.bet-cell b{font-weight:600}
+table.pairs td{vertical-align:middle}
+.vs-cell{color:var(--muted);font-family:var(--f-display);font-weight:800;font-size:12px;text-align:center;width:1%}
 .gate{position:fixed;inset:0;z-index:20;background:var(--bg);display:grid;place-items:center;padding:16px}
 .gate-card{width:100%;max-width:340px;padding:24px;display:flex;flex-direction:column;gap:10px}
 .gate-card label{font-size:13px;color:var(--muted);margin-top:8px}
@@ -182,6 +186,7 @@ details.done .tbl-wrap{border-top:1px solid var(--line)}
     <a href="#money" data-tab="money">Money <span id="cnt-acc"></span></a>
     <a href="#matches" data-tab="matches">Matches <span id="cnt-m"></span></a>
     <a href="#planner" data-tab="planner">Planner</a>
+    <a href="#bets" data-tab="bets">Bets <span id="cnt-b"></span></a>
   </nav>
 </header>
 
@@ -200,6 +205,7 @@ details.done .tbl-wrap{border-top:1px solid var(--line)}
   <section id="tab-money"></section>
   <section id="tab-matches" hidden></section>
   <section id="tab-planner" hidden></section>
+  <section id="tab-bets" hidden></section>
 </main>
 
 <script>
@@ -242,7 +248,45 @@ function fmt(inr,signed){
 }
 const inVal=inr=>(inr===''||inr==null)?'':r2(toDisp(+inr));
 const accById=id=>S.accounts.find(a=>a.id===id);
-function lockedFor(id){let t=0;for(const m of S.matches)if(m.status==='placed')for(const b of m.bets)if(b.accountId===id)t+=b.stake;return t}
+function lockedFor(id){let t=0;for(const m of S.matches)if(m.status==='placed')for(const b of m.bets)if(b.accountId===id&&b.status!=='void')t+=b.stake;return t}
+const liveStake=m=>m.bets.reduce((t,b)=>t+(b.status==='void'?0:b.stake),0);
+function betStatus(m,b){
+  if(b.status&&b.status!=='open')return b.status;
+  if(m.status==='settled')return b.side===m.winner?'won':'lost';
+  if(m.status==='void')return 'void';
+  return 'open';
+}
+/* group a match's bets into pairs: one account on each team */
+function betPairs(m){
+  const P=Math.max(1,Math.round(m.bets.length/2)),g={};
+  m.bets.forEach((b,i)=>{const k=b.pair!=null?b.pair:(i%P);const p=g[k]||(g[k]={k,A:null,B:null,ai:-1,bi:-1});
+    if(b.side==='A'&&!p.A){p.A=b;p.ai=i}else if(b.side==='B'&&!p.B){p.B=b;p.bi=i}else{g['x'+i]={k:1e6+i,A:b.side==='A'?b:null,B:b.side==='B'?b:null,ai:b.side==='A'?i:-1,bi:b.side==='B'?i:-1}}});
+  return Object.values(g).sort((x,y)=>x.k-y.k);
+}
+function sideCell(m,b,i){
+  if(!b)return '<td class="muted">—</td>';
+  const a=accById(b.accountId),s=betStatus(m,b);
+  const pill={open:'<span class="pill lock">Open</span>',void:'<span class="pill muted">Void · refunded</span>',
+    won:`<span class="pill ok">Won ${fmt(b.stake*b.odds)}</span>`,lost:'<span class="pill bad">Lost</span>'}[s];
+  const btn=s==='open'&&m.status==='placed'?`<button class="btn sm ghost" data-act="void-bet" data-id="${m.id}" data-bet="${i}">Void</button>`:'';
+  return `<td><div class="bet-cell"><b>${esc(a?a.name:b.accountName)}</b><span class="num">${fmt(b.stake)} @ ${esc(b.odds)}</span>${pill}${btn}</div></td>`;
+}
+function pairTable(m){
+  const rows=betPairs(m).map((g,n)=>{
+    const live=[g.A,g.B].filter(b=>b&&betStatus(m,b)!=='void');
+    let res;
+    if(m.status==='placed'){
+      if(live.length===2)res='<span class="pill muted">Hedged</span>';
+      else if(live.length===1)res=`<span class="pill lock">Unhedged: only ${esc(teamName(m,live[0].side))} side live</span>`;
+      else res='<span class="pill muted">Both void</span>';
+    }else{
+      const net=live.reduce((t,b)=>t+(betStatus(m,b)==='won'?b.stake*b.odds:0)-b.stake,0);
+      res=`<b class="num" style="color:var(${net>=0?'--good':'--bad'})">${fmt(net,true)}</b>`;
+    }
+    return `<tr><td class="muted num">${n+1}</td>${sideCell(m,g.A,g.ai)}<td class="vs-cell">vs</td>${sideCell(m,g.B,g.bi)}<td class="r">${res}</td></tr>`;
+  }).join('');
+  return `<div class="tbl-wrap"><table class="pairs"><thead><tr><th>Pair</th><th>On ${esc(teamName(m,'A'))}</th><th></th><th>On ${esc(teamName(m,'B'))}</th><th class="r">Pair result</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
 const teamName=(m,side)=>(side==='A'?m.teamA:m.teamB)||(side==='A'?'Team A':'Team B');
 function fmtTime(t){if(!t)return 'No start time';const d=new Date(t);return isNaN(d)?t:d.toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}
 
@@ -352,7 +396,7 @@ function shortfall(bal,P,st,fee,ids){
 /* ---------- rendering ---------- */
 function renderTotals(){
   const free=S.accounts.reduce((t,a)=>t+(+a.balance||0),0);
-  let locked=0;for(const m of S.matches)if(m.status==='placed')for(const b of m.bets)locked+=b.stake;
+  let locked=0;for(const m of S.matches)if(m.status==='placed')locked+=liveStake(m);
   const profit=S.matches.reduce((t,m)=>t+(m.status==='settled'?(+m.profit||0):0),0)-(+S.feesPaid||0);
   document.getElementById('totals').innerHTML=
     `<div><small>Free</small><b>${fmt(free)}</b></div>`+
@@ -467,13 +511,12 @@ function draftCard(m){
   </article>`;
 }
 function placedCard(m){
-  const rows=m.bets.map(b=>{const a=accById(b.accountId);return `<tr><td>${esc(a?a.name:b.accountName)}</td><td><span class="${b.side==='A'?'side-a':''}">${esc(teamName(m,b.side))}</span> @ ${esc(b.odds)}</td><td class="r num">${fmt(b.stake)}</td><td class="r num">${fmt(b.stake*b.odds)}</td></tr>`}).join('');
-  const st=m.bets.reduce((t,b)=>t+b.stake,0);
+  const st=liveStake(m);
   return `<article class="card match">
     <div class="m-top"><h3>${esc(m.name)}: ${esc(teamName(m,'A'))} vs ${esc(teamName(m,'B'))}</h3><span class="pill lock">Bets placed · ${fmt(st)} in play</span></div>
     <div class="muted" style="font-size:13px;margin-top:-8px">${esc(fmtTime(m.time))} · ${m.bets.length/2} pair${m.bets.length/2>1?'s':''}</div>
-    <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Bet on</th><th class="r">Stake</th><th class="r">Pays if wins</th></tr></thead><tbody>${rows}</tbody></table></div>
-    <div><div class="muted" style="font-size:13px;margin-bottom:6px">When the match ends, mark the winner. Winning accounts get their payout added to their free balance.</div>
+    ${pairTable(m)}
+    <div><div class="muted" style="font-size:13px;margin-bottom:6px">If a bookie voids one bet, press Void on that bet: its stake goes back to that account. When the match ends, mark the winner. Winning accounts get their payout added to their free balance.</div>
     <div class="settle">
       <button class="btn pri" data-act="settle" data-id="${m.id}" data-side="A">${esc(teamName(m,'A'))} won</button>
       <button class="btn pri" data-act="settle" data-id="${m.id}" data-side="B">${esc(teamName(m,'B'))} won</button>
@@ -493,7 +536,7 @@ function renderMatches(){
   ${placed.length&&drafts.length?`<h3 style="font-size:16px">Planning</h3>`:''}
   <div class="matches">${drafts.map(draftCard).join('')||`<div class="card empty">No matches being planned. Add a match to work out stakes.</div>`}</div>
   ${done.length?`<details class="card done"><summary>Finished matches (${done.length})</summary><div class="tbl-wrap"><table><thead><tr><th>Match</th><th>Result</th><th class="r">Staked</th><th class="r">Profit</th></tr></thead><tbody>${
-    done.slice().reverse().map(m=>`<tr><td>${esc(teamName(m,'A'))} vs ${esc(teamName(m,'B'))}<div class="muted" style="font-size:12px">${esc(fmtTime(m.time))}</div></td><td>${m.status==='void'?'<span class="pill muted">Void</span>':`<span class="pill ok">${esc(teamName(m,m.winner))} won</span>`}</td><td class="r num">${fmt(m.bets.reduce((t,b)=>t+b.stake,0))}</td><td class="r num" style="color:var(${(+m.profit||0)>=0?'--good':'--bad'})">${fmt(m.profit||0,true)}</td></tr>`).join('')
+    done.slice().reverse().map(m=>`<tr><td>${esc(teamName(m,'A'))} vs ${esc(teamName(m,'B'))}<div class="muted" style="font-size:12px">${esc(fmtTime(m.time))}</div></td><td>${m.status==='void'?'<span class="pill muted">Void</span>':`<span class="pill ok">${esc(teamName(m,m.winner))} won</span>`}</td><td class="r num">${fmt(liveStake(m))}</td><td class="r num" style="color:var(${(+m.profit||0)>=0?'--good':'--bad'})">${fmt(m.profit||0,true)}</td></tr>`).join('')
   }</tbody></table></div></details>`:''}`;
 }
 function renderPlanner(){
@@ -529,9 +572,33 @@ function renderPlanner(){
   <p class="muted" style="font-size:13px;margin:0">Money from a finished match is only counted once you mark the winner on the Matches tab, so the planner never spends winnings you don't have yet.</p>`;
 }
 let planCache={rows:[],left:{}};
+const TABS=['money','matches','planner','bets'];
+let betFilter='open';
+function renderBets(){
+  const el=document.getElementById('tab-bets');
+  const withBets=S.matches.filter(m=>m.bets&&m.bets.length);
+  const open=withBets.filter(m=>m.status==='placed');
+  const list=(betFilter==='open'?open:withBets).slice().sort((x,y)=>{
+    const ox=x.status==='placed'?0:1,oy=y.status==='placed'?0:1;if(ox!==oy)return ox-oy;
+    return String(y.settledAt||y.placedAt||'').localeCompare(String(x.settledAt||x.placedAt||''))});
+  const statusPill=m=>m.status==='placed'?`<span class="pill lock">Waiting for result · ${fmt(liveStake(m))} in play</span>`:
+    m.status==='void'?'<span class="pill muted">Match void</span>':
+    `<span class="pill ok">${esc(teamName(m,m.winner))} won · ${fmt(m.profit||0,true)}</span>`;
+  el.innerHTML=`
+  <div class="sec-head"><div><h2>Bets</h2><p>Every pair of bets, account against account. If a bookie voids one bet, press Void on it: the stake goes back to the account it came from, and that bet is left out when you mark the winner.</p></div>
+  <div class="seg" role="group" aria-label="Show">
+    <button data-act="bfilter" data-v="open" aria-pressed="${betFilter==='open'}">Open (${open.length})</button>
+    <button data-act="bfilter" data-v="all" aria-pressed="${betFilter==='all'}">All (${withBets.length})</button>
+  </div></div>
+  ${list.length?list.map(m=>`<article class="card match">
+    <div class="m-top"><div><h3>${esc(teamName(m,'A'))} vs ${esc(teamName(m,'B'))}</h3><div class="muted" style="font-size:13px">${esc(m.name)} · ${esc(fmtTime(m.time))}</div></div>${statusPill(m)}</div>
+    ${pairTable(m)}</article>`).join('')
+  :`<div class="card empty">${betFilter==='open'?'No open bets. Bets show up here after you press "Mark bets placed" on the Planner tab.':'No bets yet.'}</div>`}`;
+  const c=document.getElementById('cnt-b');if(c)c.textContent=open.reduce((t,m)=>t+m.bets.filter(b=>b.status!=='void').length,0)||'';
+}
 function recompute(){planCache=plan();lastPlan=planCache.rows}
 function renderAll(){
-  recompute();renderTotals();renderSaveState();renderNotes();renderMoney();renderMatches();renderPlanner();showTab();
+  recompute();renderTotals();renderSaveState();renderNotes();renderMoney();renderMatches();renderPlanner();renderBets();showTab();
 }
 function refreshLight(){
   recompute();renderTotals();renderSaveState();
@@ -543,12 +610,12 @@ function refreshLight(){
   renderPlanner();
 }
 function showTab(){
-  for(const t of ['money','matches','planner']){
+  for(const t of TABS){
     document.getElementById('tab-'+t).hidden=t!==tab;
     document.querySelector(`[data-tab="${t}"]`).setAttribute('aria-current',t===tab?'page':'false');
   }
 }
-function readHash(){const h=location.hash.slice(1);tab=['money','matches','planner'].includes(h)?h:'money';showTab()}
+function readHash(){const h=location.hash.slice(1);tab=TABS.includes(h)?h:'money';showTab()}
 window.addEventListener('hashchange',()=>{readHash();if(tab==='planner'){recompute();renderPlanner()}});
 
 /* ---------- state changes ---------- */
@@ -608,7 +675,7 @@ document.addEventListener('click',e=>{
     const fee=feeInr(),m=r.m;
     for(const t of r.transfers){const f=accById(t.from),to=accById(t.to);f.balance=r2(f.balance-t.amount-fee);to.balance=r2(to.balance+t.amount);S.feesPaid=r2((S.feesPaid||0)+fee)}
     for(const x of r.bets){const a=accById(x.accountId);a.balance=r2(a.balance-x.stake)}
-    m.bets=r.bets.map(x=>({accountId:x.accountId,accountName:accById(x.accountId).name,side:x.side,stake:x.stake,odds:x.side==='A'?+m.oddsA:+m.oddsB}));
+    m.bets=r.bets.map((x,i)=>({accountId:x.accountId,accountName:accById(x.accountId).name,side:x.side,stake:x.stake,odds:x.side==='A'?+m.oddsA:+m.oddsB,pair:i%r.P,status:'open'}));
     m.status='placed';m.placedAt=new Date().toISOString();
     addLog(`Placed ${r.P} pair${r.P>1?'s':''} on ${teamName(m,'A')} vs ${teamName(m,'B')} (${fmt(r.st.total*r.P)} staked, ${r.transfers.length} transfers)`);
     renderAll();save();return}
@@ -617,11 +684,20 @@ document.addEventListener('click',e=>{
     const side=b.dataset.side;
     if(!confirmTwice(b,act+'-'+id+(side||''),'Click again to confirm'))return;
     let staked=0,paid=0;
-    for(const x of m.bets){staked+=x.stake;const a=accById(x.accountId);
-      const back=act==='void'?x.stake:(x.side===side?x.stake*x.odds:0);paid+=back;if(a&&back)a.balance=r2(a.balance+back)}
+    for(const x of m.bets){if(x.status==='void')continue;staked+=x.stake;const a=accById(x.accountId);
+      const back=act==='void'?x.stake:(x.side===side?x.stake*x.odds:0);paid+=back;if(a&&back)a.balance=r2(a.balance+back);
+      x.status=act==='void'?'void':(x.side===side?'won':'lost')}
     m.status=act==='void'?'void':'settled';m.winner=side||null;m.profit=act==='void'?0:r2(paid-staked);m.settledAt=new Date().toISOString();
     addLog(act==='void'?`Voided ${teamName(m,'A')} vs ${teamName(m,'B')}, stakes refunded`:`${teamName(m,side)} won (${teamName(m,'A')} vs ${teamName(m,'B')}): profit ${fmt(m.profit,true)}`);
     renderAll();save();return}
+  if(act==='void-bet'){
+    const m=S.matches.find(x=>x.id===id);const i=+b.dataset.bet;const x=m&&m.bets[i];
+    if(!x||m.status!=='placed'||x.status==='void')return;
+    if(!confirmTwice(b,'vb-'+id+'-'+i,'Refund stake?'))return;
+    const a=accById(x.accountId);if(a)a.balance=r2(a.balance+x.stake);x.status='void';
+    addLog(`Voided ${a?a.name:x.accountName}'s bet on ${teamName(m,x.side)}: ${fmt(x.stake)} back to ${a?a.name:x.accountName}`);
+    renderAll();scrollTo(0,y);save();return}
+  if(act==='bfilter'){betFilter=b.dataset.v;renderBets();return}
   if(act==='round'||act==='clear-custom'){
     const m=S.matches.find(x=>x.id===id);if(!m)return;
     if(act==='round'){m.customA=+b.dataset.a;m.customB=+b.dataset.b}else{m.customA='';m.customB=''}
