@@ -135,6 +135,10 @@ tr.off td:not(.chk){opacity:.45;text-decoration:line-through}
 tr.grp td{background:var(--surface-2);font-size:13px;padding-top:8px;padding-bottom:8px}
 tr.grp-safe b{color:var(--good)} tr.grp-risky b{color:var(--bad)} tr.grp-cover b{color:var(--warn)}
 .pill.risk{cursor:help}
+.row-acts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+.quick-acc{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.quick-acc>span{flex:1 1 220px}
+.quick-acc input[type=text],.quick-acc .cur-in{width:170px;flex:0 1 170px}
 table.sides tfoot td{border-top:1px solid var(--line);font-size:13px}
 .vs-cell{color:var(--muted);font-family:var(--f-display);font-weight:800;font-size:12px;text-align:center;width:1%}
 .gate{position:fixed;inset:0;z-index:20;background:var(--bg);display:grid;place-items:center;padding:16px}
@@ -362,21 +366,43 @@ function roundOptions(m){
    can never break a safe pair. Cover bets use leftover safe accounts first. */
 let riskySet=new Set();
 const isRisky=id=>riskySet.has(id);
-function groupPick(bal,pool,n,big){
-  const byBal=(x,y)=>bal[y]-bal[x];
-  const safe=pool.filter(id=>!isRisky(id)).sort(byBal), risky=pool.filter(isRisky).sort(byBal);
+/* pref = {accountId: side} from the previous plan, so placing one bet doesn't reshuffle the rest */
+function groupPick(bal,pool,n,big,pref={}){
+  const out=[],used=new Set();
+  const order=list=>list.sort((x,y)=>((pref[y]===n.coverSide)-(pref[x]===n.coverSide))||(bal[y]-bal[x]));
+  // covers first, from the same group as the bets they balance (safe covers safe, risky covers risky)
+  const take=(wantRisky,k)=>{
+    const mine=order(pool.filter(id=>!used.has(id)&&isRisky(id)===wantRisky));
+    const other=order(pool.filter(id=>!used.has(id)&&isRisky(id)!==wantRisky));
+    for(const id of mine.concat(other).slice(0,k)){used.add(id);out.push({accountId:id,side:n.coverSide,group:'cover'})}
+  };
+  take(false,n.Cs||0);take(true,n.C-(n.Cs||0));
+  if(out.length<n.C)return null;
+  const byPref=(x,y)=>(!!pref[y]-!!pref[x])||(bal[y]-bal[x]);
+  const left=pool.filter(id=>!used.has(id));
+  const safe=left.filter(id=>!isRisky(id)).sort(byPref), risky=left.filter(isRisky).sort(byPref);
   const Ps=Math.min(n.P,Math.floor(safe.length/2)), Pr=n.P-Ps;
   if(Pr>Math.floor(risky.length/2))return null;
-  const small=big==='A'?'B':'A', out=[];
-  const pairs=(list,k,group)=>{for(let i=0;i<k;i++)out.push({accountId:list[i],side:big,group});for(let i=k;i<2*k;i++)out.push({accountId:list[i],side:small,group})};
+  const small=big==='A'?'B':'A';
+  const pairs=(list,k,group)=>{
+    const pick=list.slice(0,2*k).sort((x,y)=>bal[y]-bal[x]);
+    // accounts keep the side they had in the last plan; new ones fill the gaps (richest on the big side)
+    const B=pick.filter(id=>pref[id]===big).slice(0,k), Sm=pick.filter(id=>pref[id]===small).slice(0,k);
+    const rest=pick.filter(id=>!B.includes(id)&&!Sm.includes(id));
+    while(B.length<k)B.push(rest.shift());
+    while(Sm.length<k)Sm.push(rest.shift());
+    B.forEach(id=>out.push({accountId:id,side:big,group}));Sm.forEach(id=>out.push({accountId:id,side:small,group}));
+  };
   pairs(safe,Ps,'safe');pairs(risky,Pr,'risky');
-  const rest=safe.slice(2*Ps).concat(risky.slice(2*Pr));
-  if(rest.length<n.C)return null;
-  for(let i=0;i<n.C;i++)out.push({accountId:rest[i],side:n.coverSide,group:'cover'});
   return out;
 }
-function tryAssign(bal,n,st,fee,pool,ids){
-  const picks=groupPick(bal,pool,n,st.bigSide);
+function tryAssign(bal,n,st,fee,pool,ids,pref){
+  // keep the last plan's choices when the money allows it, else plan from scratch
+  if(pref){const k=assignWith(bal,n,st,fee,pool,ids,pref);if(!k.fail)return k}
+  return assignWith(bal,n,st,fee,pool,ids,{});
+}
+function assignWith(bal,n,st,fee,pool,ids,pref){
+  const picks=groupPick(bal,pool,n,st.bigSide,pref);
   if(!picks)return{fail:'accounts'};
   const stakeOf=s=>s==='A'?st.stakeA:st.stakeB;
   const assign=picks.map(x=>({...x,stake:stakeOf(x.side)}));
@@ -435,16 +461,20 @@ function plan(){
     const nA=live.filter(b=>b.side==='A').length, nB=live.length-nA;
     const coverSide=nA>nB?'B':'A', gap=Math.abs(nA-nB);
     const reqC=Math.min(gap,pool.length);
-    const n=(C,P)=>({C,P,coverSide});
+    // how many of the unhedged bets are on safe accounts: those get safe covers
+    const sd=live.filter(b=>!isRisky(b.accountId)).reduce((t,b)=>t+(b.side===coverSide?-1:1),0);
+    const n=(C,P)=>({C,P,coverSide,Cs:Math.min(C,Math.max(0,sd))});
     const maxP=C=>{for(let P=Math.floor((pool.length-C)/2);P>0;P--)if(groupPick(bal,pool,n(C,P),'A'))return P;return 0};
     const req=maxP(reqC);
     const base={m,st,placed,skip:[...skip],coverSide,gap,reqC,req,liveA:nA,liveB:nB,riskyOut,noRisky:!!m.noRisky};
     if(!st||(!placed&&!req)){out.push({...base,C:0,P:0,bets:[],transfers:[],reason:!st?'incomplete':'accounts'});continue}
     if(placed&&!reqC&&!req){if(gap)out.push({...base,C:0,P:0,bets:[],transfers:[],reason:'nocover'});continue}
+    const prev=planCache.rows.find(x=>x.m.id===m.id),pref={};
+    if(prev)for(const x of prev.bets||[])pref[x.accountId]=x.side;
     let res=null;
     outer:for(let C=reqC;C>=0;C--)for(let P=maxP(C);P>=0;P--){
       if(C+P===0)continue;
-      const r=tryAssign(bal,n(C,P),st,fee,pool,ids);if(!r.fail){res={...r,C,P};break outer}}
+      const r=tryAssign(bal,n(C,P),st,fee,pool,ids,pref);if(!r.fail){res={...r,C,P};break outer}}
     const full=res&&res.C===reqC&&res.P===req;
     const need=full?null:shortfall(bal,n(reqC,req),st,fee,pool,ids);
     const off=res?res.bets.filter(x=>isUnticked(m,x.accountId)):[];
@@ -640,7 +670,7 @@ function renderPlanner(){
     if(!r.C&&!r.P)return `<div class="card plan"><h3>${head}</h3><div class="meta">${esc(fmtTime(m.time))}</div>${short}${skipped}${r.noRisky?`<div class="chips"><button class="chip on" data-act="norisky" data-id="${m.id}">Risky accounts left out · use them again</button></div>`:''}</div>`;
     const isOn=b=>!isUnticked(m,b.accountId);
     const nOn=r.bets.filter(isOn).length;
-    const betRow=b=>`<tr${isOn(b)?'':' class="off"'}><td class="chk"><input type="checkbox" data-chk="${m.id}" data-acc="${b.accountId}"${isOn(b)?' checked':''} aria-label="Placed ${esc(accById(b.accountId)?.name)}'s bet"></td><td>${esc(accById(b.accountId)?.name)}${riskBadge(b.accountId)}</td><td><span class="${b.side==='A'?'side-a':''}">${esc(teamName(m,b.side))}</span> @ ${esc(b.side==='A'?(r.st.oddsA??m.oddsA):(r.st.oddsB??m.oddsB))}</td><td class="r num">${fmt(b.stake)}</td><td class="r"><button class="btn sm ghost" data-act="skip" data-id="${m.id}" data-acc="${b.accountId}" title="This account can't bet on this match: pick another">Can't place</button></td></tr>`;
+    const betRow=b=>`<tr${isOn(b)?'':' class="off"'}><td class="chk"><input type="checkbox" data-chk="${m.id}" data-acc="${b.accountId}"${isOn(b)?' checked':''} aria-label="Placed ${esc(accById(b.accountId)?.name)}'s bet"></td><td>${esc(accById(b.accountId)?.name)}${riskBadge(b.accountId)}</td><td><span class="${b.side==='A'?'side-a':''}">${esc(teamName(m,b.side))}</span> @ ${esc(b.side==='A'?(r.st.oddsA??m.oddsA):(r.st.oddsB??m.oddsB))}</td><td class="r num">${fmt(b.stake)}</td><td class="r"><div class="row-acts"><button class="btn sm pri" data-act="place-one" data-id="${m.id}" data-acc="${b.accountId}" title="Record just this bet now; the rest of the plan updates">Placed ✓</button><button class="btn sm ghost" data-act="skip" data-id="${m.id}" data-acc="${b.accountId}" title="This account can't bet on this match: pick another">Can't place</button></div></td></tr>`;
     const GROUPS={cover:['Cover bets','Even out the sides of bets already placed.'],safe:['Safe pairs','No bet has ever been voided on these accounts.'],risky:['Risky pairs','These accounts have had bets voided before, so they only pair with each other. If a bookie voids some of these, your safe pairs stay hedged.']};
     const nPairs=g=>r.bets.filter(b=>b.group===g).length/(g==='cover'?1:2);
     const bets=['cover','safe','risky'].filter(g=>r.bets.some(b=>b.group===g)).map(g=>`<tr class="grp grp-${g}"><td colspan="5"><b>${GROUPS[g][0]} · ${nPairs(g)}</b> <span class="muted">${GROUPS[g][1]}</span></td></tr>`+r.bets.filter(b=>b.group===g).sort((x,y)=>x.side<y.side?-1:1).map(betRow).join('')).join('');
@@ -661,7 +691,7 @@ function renderPlanner(){
       <button class="btn pri" data-act="place" data-id="${m.id}"${nOn?'':' disabled'}>${nOn===r.bets.length?'Mark bets placed':`Mark ${nOn} of ${r.bets.length} bets placed`}</button></div>
       ${cover}${nOn<r.bets.length&&nOn?`<div class="note warn">${r.bets.length-nOn} bet${r.bets.length-nOn>1?'s':''} unticked. Only the ticked ones get recorded; if that leaves one side short, the planner will suggest a cover bet next.</div>`:''}${short}
       <div><div class="muted" style="font-size:13px;margin-bottom:6px">1. Make these transfers first${r.transfers.length?` (${r.transfers.length})`:''}</div>${xf}</div>
-      <div><div class="muted" style="font-size:13px;margin-bottom:6px">2. Then place these bets. Untick any bet you didn't place: only ticked bets are recorded. If an account can't bet on this match at all, press Can't place and the plan picks another account.</div>
+      <div><div class="muted" style="font-size:13px;margin-bottom:6px">2. Then place these bets. Press Placed ✓ on each bet as you place it: it's recorded straight away (with its transfers) and the rest of the plan updates. Or place them all, untick any you didn't place, and press Mark bets placed. If an account can't bet on this match at all, press Can't place and the plan picks another account.</div>
       <div class="tbl-wrap card"><table><thead><tr><th class="chk"><input type="checkbox" data-chk-all="${m.id}"${nOn===r.bets.length?' checked':''} aria-label="Tick all"></th><th>Account</th><th>Bet on</th><th class="r">Stake</th><th></th></tr></thead><tbody>${bets}</tbody></table></div></div>
       ${skipped}${riskyToggle}
       ${r.P?`<div class="kv"><div><span>Locked-in profit from new pairs </span><b class="${profit>=0?'g':'x'}">${fmt(profit,true)}</b></div><div><span>fees </span><b>${fmt(feeTot)}</b></div><div><span>net </span><b class="${profit-feeTot>=0?'g':'x'}">${fmt(profit-feeTot,true)}</b></div></div>`:`<div class="kv"><div><span>fees </span><b>${fmt(feeTot)}</b></div></div>`}
@@ -671,6 +701,10 @@ function renderPlanner(){
   <div class="sec-head"><div><h2>Planner</h2><p>Uses the free balances on the Money tab and fills matches earliest first, using as many pairs as the money allows (your ${S.accounts.length} accounts make ${Math.floor(S.accounts.length/2)} pairs at most). Each account bets once per match, and each pair is two different accounts on opposite sides. Transfers are kept as few as possible, since each one costs ${fmt(fee)}.</p></div></div>
   ${!S.accounts.length?`<div class="card empty">Add your accounts on the Money tab first.</div>`:''}
   ${rows.length?cards:`<div class="card empty">No matches are being planned. Add one on the Matches tab.</div>`}
+  <div class="card quick-acc"><span><b>New account?</b> <span class="muted">Add it here and the plan updates with it.</span></span>
+    <input type="text" id="qa-name" placeholder="Name" aria-label="New account name">
+    <div class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" id="qa-bal" placeholder="Free balance" aria-label="New account free balance"></div>
+    <button class="btn pri" data-act="quick-acc">Add account</button></div>
   ${S.accounts.length&&rows.some(r=>r.bets.length)?`<h3 style="font-size:16px;margin-top:8px">Free money after these bets</h3><div class="card tbl-wrap"><table><thead><tr><th>Account</th><th class="r">Free now</th><th class="r">Left after plan</th></tr></thead><tbody>${leftRows}</tbody></table></div>`:''}
   <p class="muted" style="font-size:13px;margin:0">Money from a finished match is only counted once you mark the winner on the Matches tab, so the planner never spends winnings you don't have yet.</p>`;
 }
@@ -811,6 +845,32 @@ document.addEventListener('click',e=>{
     addLog(`${was?'Added':'Placed'} ${chosen.length} bet${chosen.length>1?'s':''} on ${teamName(m,'A')} vs ${teamName(m,'B')} (${cA} on ${teamName(m,'A')}, ${cB} on ${teamName(m,'B')}; ${fmt(chosen.reduce((t,x)=>t+x.stake,0))} staked, ${r.transfers.length} transfers)${chosen.length<r.bets.length?`, ${r.bets.length-chosen.length} unticked`:''}`);
     delete m.unticked;
     renderAll();scrollTo(0,y);save();return}
+  if(act==='place-one'){
+    const r=lastPlan.find(x=>x.m.id===id);const acc=b.dataset.acc;const x=r&&r.bets.find(q=>q.accountId===acc);if(!x)return;
+    const fee=feeInr(),m=r.m,a=accById(acc);if(!a)return;
+    const incoming=r.transfers.filter(t=>t.to===acc);
+    // who would go below zero if we do only this bet and its transfers now
+    const after={};const add=(id,v)=>after[id]=(after[id]??(+accById(id)?.balance||0))+v;
+    for(const t of incoming){add(t.from,-(t.amount+fee));add(t.to,t.amount)}
+    add(acc,-x.stake);
+    const neg=Object.entries(after).filter(([,v])=>v< -0.004).map(([id,v])=>({id,amt:r2(-v)})),extra=neg.reduce((t,n)=>t+n.amt,0);
+    const lbl=neg.length?`Had ${fmt(extra)} extra? Place`:incoming.length?`Send ${incoming.length} + place?`:'Confirm?';
+    if(!confirmTwice(b,'p1-'+id+acc,lbl))return;
+    for(const n of neg){const q=accById(n.id);q.balance=r2(q.balance+n.amt);addLog(`Found ${fmt(n.amt)} extra in ${q.name} (not tracked before)`)}
+    for(const t of incoming){const f=accById(t.from),to=accById(t.to);f.balance=r2(f.balance-t.amount-fee);to.balance=r2(to.balance+t.amount);S.feesPaid=r2((S.feesPaid||0)+fee);addLog(`Sent ${fmt(t.amount)} from ${f.name} to ${to.name} (+${fmt(fee)} fee)`)}
+    a.balance=r2(a.balance-x.stake);if(a.balance<0&&a.balance>-0.02)a.balance=0;
+    if(Array.isArray(m.xfers))m.xfers=m.xfers.filter(t=>t.to!==acc);
+    if(Array.isArray(m.unticked))m.unticked=m.unticked.filter(q=>q!==acc);
+    const odds=x.side==='A'?(r.st.oddsA??+m.oddsA):(r.st.oddsB??+m.oddsB);
+    m.bets=(m.bets||[]).concat([{accountId:acc,accountName:a.name,side:x.side,stake:x.stake,odds,status:'open'}]);
+    if(m.status!=='placed'){m.status='placed';m.placedAt=new Date().toISOString()}
+    addLog(`Placed ${a.name} on ${teamName(m,x.side)}: ${fmt(x.stake)} @ ${odds} (${teamName(m,'A')} vs ${teamName(m,'B')})`);
+    renderAll();scrollTo(0,y);save();return}
+  if(act==='quick-acc'){
+    const n=document.getElementById('qa-name'),v=document.getElementById('qa-bal');
+    const name=n.value.trim();if(!name){n.focus();return}
+    S.accounts.push({id:uid(),name,balance:v.value===''?0:r2(fromDisp(+v.value))});
+    addLog(`Added account ${name}`);renderAll();scrollTo(0,y);save();return}
   if(act==='xf-del'||act==='xf-add'||act==='xf-reset'){
     const m=S.matches.find(x=>x.id===id);if(!m)return;
     if(act==='xf-reset')delete m.xfers;
