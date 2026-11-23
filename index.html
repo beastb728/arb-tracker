@@ -318,8 +318,8 @@ function betCell(m,b,i){
     won:`<span class="pill ok">Won ${fmt(b.stake*b.odds)}</span>`,lost:'<span class="pill bad">Lost</span>'}[s];
   const live=s==='open'&&m.status==='placed';
   if(live&&editingBet===m.id+':'+i)return `<td><div class="bet-cell bet-edit"><b>${esc(a?a.name:b.accountName)}</b>
-    <span class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" id="be-s-${m.id}-${i}" value="${inVal(b.stake)}" aria-label="Stake"></span>
-    <span class="muted">@</span><input type="number" step="0.01" min="1" id="be-o-${m.id}-${i}" value="${esc(b.odds)}" aria-label="Odds" style="width:80px">
+    <span class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" data-be="stake" value="${inVal(b.stake)}" aria-label="Stake"></span>
+    <span class="muted">@</span><input type="number" step="0.01" min="1" data-be="odds" value="${esc(b.odds)}" aria-label="Odds" style="width:80px">
     <button class="btn sm pri" data-act="bet-save" data-id="${m.id}" data-bet="${i}">Save</button><button class="btn sm ghost" data-act="bet-cancel">Cancel</button></div></td>`;
   const btn=live?`<button class="btn sm ghost" data-act="bet-edit" data-id="${m.id}" data-bet="${i}">Edit</button><button class="btn sm ghost" data-act="void-bet" data-id="${m.id}" data-bet="${i}" title="The bookie voided it: refund and mark the account risky">Void</button><button class="btn sm ghost danger" data-act="bet-del" data-id="${m.id}" data-bet="${i}" title="Entered by mistake: remove and refund the stake">Remove</button>`:'';
   return `<td${s==='void'?' class="voided"':''}><div class="bet-cell"><b>${esc(a?a.name:b.accountName)}</b>${riskBadge(b.accountId)}<span class="num">${fmt(b.stake)} @ ${esc(b.odds)}</span>${pill}${btn}</div></td>`;
@@ -346,10 +346,10 @@ function sideTable(m){
     const evenHint=live.length&&even>=1?`<div class="note">To even out both results, add <b class="num">${fmt(even)}</b> on ${esc(teamName(m,low))} @ ${lowOdds}. <button class="btn sm" data-act="bet-prefill" data-id="${m.id}" data-side="${low}" data-stake="${even}" data-odds="${lowOdds}">Use this</button></div>`:'';
     const accOpts=S.accounts.map(a=>`<option value="${a.id}">${esc(a.name||'(unnamed)')} · ${fmt(a.balance||0)} free</option>`).join('');
     const addForm=`<div class="bet-add"><span class="muted" style="font-size:13px">Add a bet you placed:</span>
-      <select id="ba-acc-${m.id}" aria-label="Account">${accOpts}</select>
-      <select id="ba-side-${m.id}" data-ba-side="${m.id}" aria-label="Team"><option value="A">${esc(teamName(m,'A'))}</option><option value="B">${esc(teamName(m,'B'))}</option></select>
-      <span class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" id="ba-stake-${m.id}" placeholder="stake" aria-label="Stake"></span>
-      <span class="muted">@</span><input type="number" step="0.01" min="1" id="ba-odds-${m.id}" value="${esc(m.oddsA)}" aria-label="Odds" style="width:80px">
+      <select data-ba="acc" aria-label="Account">${accOpts}</select>
+      <select data-ba="side" data-ba-side="${m.id}" aria-label="Team"><option value="A">${esc(teamName(m,'A'))}</option><option value="B">${esc(teamName(m,'B'))}</option></select>
+      <span class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" data-ba="stake" placeholder="stake" aria-label="Stake"></span>
+      <span class="muted">@</span><input type="number" step="0.01" min="1" data-ba="odds" value="${esc(m.oddsA)}" aria-label="Odds" style="width:80px">
       <button class="btn sm pri" data-act="bet-add" data-id="${m.id}">Add bet</button></div>`;
     summary=`<div class="kv">${live.length?`<div>${pf('A')}</div><div>${pf('B')}</div>`:''}</div>`+evenHint+addForm+
       (nA!==nB?`<div class="note warn">Unhedged: ${Math.abs(nA-nB)} more bet${Math.abs(nA-nB)>1?'s':''} on ${esc(teamName(m,nA>nB?'A':'B'))} than on ${esc(teamName(m,nA>nB?'B':'A'))}. The Planner suggests a cover bet.</div>`:'');
@@ -835,7 +835,7 @@ function xfersOf(m){
 }
 
 document.addEventListener('change',e=>{
-  if(e.target.dataset.baSide){const m=S.matches.find(x=>x.id===e.target.dataset.baSide);const o=document.getElementById('ba-odds-'+m.id);
+  if(e.target.dataset.baSide){const m=S.matches.find(x=>x.id===e.target.dataset.baSide);const o=e.target.closest('.bet-add')?.querySelector('[data-ba="odds"]');
     const last=m.bets.filter(b=>b.side===e.target.value).slice(-1)[0];if(o)o.value=last?last.odds:(e.target.value==='A'?m.oddsA:m.oddsB);return}
   const t=e.target;
   if(t.dataset.chk||t.dataset.chkAll){
@@ -980,13 +980,13 @@ document.addEventListener('click',e=>{
     const a=accById(x.accountId);if(a)a.balance=r2(a.balance+x.stake);x.status='void';x.bookieVoid=true;
     addLog(`Voided ${a?a.name:x.accountName}'s bet on ${teamName(m,x.side)}: ${fmt(x.stake)} back to ${a?a.name:x.accountName}`);
     renderAll();scrollTo(0,y);save();return}
-  if(act==='bet-edit'){editingBet=id+':'+b.dataset.bet;renderAll();scrollTo(0,y);document.getElementById(`be-s-${id}-${b.dataset.bet}`)?.focus();return}
+  if(act==='bet-edit'){editingBet=id+':'+b.dataset.bet;renderAll();scrollTo(0,y);document.querySelector(`#tab-${tab} .bet-edit [data-be="stake"]`)?.focus();return}
   if(act==='bet-cancel'){editingBet=null;renderAll();scrollTo(0,y);return}
   if(act==='bet-save'||act==='bet-add'){
     const m=S.matches.find(x=>x.id===id);if(!m)return;
     let x,a,stake,odds,side;
-    if(act==='bet-save'){x=m.bets[+b.dataset.bet];if(!x)return;a=accById(x.accountId);stake=+document.getElementById(`be-s-${id}-${b.dataset.bet}`).value;odds=+document.getElementById(`be-o-${id}-${b.dataset.bet}`).value;side=x.side}
-    else{a=accById(document.getElementById('ba-acc-'+id).value);side=document.getElementById('ba-side-'+id).value;stake=+document.getElementById('ba-stake-'+id).value;odds=+document.getElementById('ba-odds-'+id).value}
+    if(act==='bet-save'){const box=b.closest('.bet-edit');x=m.bets[+b.dataset.bet];if(!x||!box)return;a=accById(x.accountId);stake=+box.querySelector('[data-be="stake"]').value;odds=+box.querySelector('[data-be="odds"]').value;side=x.side}
+    else{const box=b.closest('.bet-add');if(!box)return;const f=k=>box.querySelector(`[data-ba="${k}"]`).value;a=accById(f('acc'));side=f('side');stake=+f('stake');odds=+f('odds')}
     if(!a||!(stake>0)||!(odds>1)){const t=b.textContent;b.textContent=!(stake>0)?'Enter a stake':'Odds must be above 1';setTimeout(()=>b.textContent=t,2000);return}
     stake=r2(fromDisp(stake));
     const more=act==='bet-save'?r2(stake-x.stake):stake; // extra money this takes from the account
@@ -1006,12 +1006,12 @@ document.addEventListener('click',e=>{
     if(!m.bets.length){m.status='draft';delete m.placedAt}
     renderAll();scrollTo(0,y);save();return}
   if(act==='bet-prefill'){
-    const id2=id;document.getElementById('ba-side-'+id2).value=b.dataset.side;
-    document.getElementById('ba-stake-'+id2).value=inVal(+b.dataset.stake);document.getElementById('ba-odds-'+id2).value=b.dataset.odds;
-    const acc=document.getElementById('ba-acc-'+id2);const m=S.matches.find(x=>x.id===id2);
+    const box=b.closest('article')?.querySelector('.bet-add');const m=S.matches.find(x=>x.id===id);if(!box||!m)return;
+    const f=k=>box.querySelector(`[data-ba="${k}"]`);
+    f('side').value=b.dataset.side;f('stake').value=inVal(+b.dataset.stake);f('odds').value=b.dataset.odds;
     const free=S.accounts.filter(a=>!(m.bets||[]).some(q=>q.accountId===a.id&&q.status==='open')).sort((p,q)=>(q.balance||0)-(p.balance||0))[0];
-    if(free)acc.value=free.id;
-    document.getElementById('ba-stake-'+id2).focus();return}
+    if(free)f('acc').value=free.id;
+    f('stake').focus();return}
   if(act==='bfilter'){betFilter=b.dataset.v;renderBets();return}
   if(act==='round'||act==='clear-custom'){
     const m=S.matches.find(x=>x.id===id);if(!m)return;
