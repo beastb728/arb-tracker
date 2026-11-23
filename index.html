@@ -138,6 +138,13 @@ tr.grp-safe b{color:var(--good)} tr.grp-risky b{color:var(--bad)} tr.grp-cover b
 .xfer .xf-chk{width:18px;height:18px;accent-color:var(--accent);cursor:pointer;margin:0}
 .xfer li.done{opacity:.7}
 .xfer li.done b,.xfer li.done .num{text-decoration:line-through}
+.pill.safe{background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
+button.pill{font:inherit;font-size:12px;font-weight:600;cursor:pointer;border:0}
+button.pill.safe{border:1px solid var(--line)}
+.bet-edit .cur-in{width:120px}
+.bet-add{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 12px;border:1px dashed var(--line);border-radius:8px;margin-top:8px}
+.bet-add select{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:7px;padding:6px 8px;max-width:220px}
+.bet-add .cur-in{width:130px}
 .row-acts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
 .quick-acc{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .quick-acc>span{flex:1 1 220px}
@@ -252,6 +259,7 @@ const clone=o=>JSON.parse(JSON.stringify(o));
 let S=defaultState(), dirty=false, mode='loading', docRef=null, pendingRemote=null, saving=false, saveAgain=false;
 let armed=null, armTimer=null, lastPlan=[], tab='money', notes={};
 /* planned bets you have unticked are kept on the match (m.unticked = account ids), so every device sees them */
+let editingBet=null; // "matchId:betIndex" being edited
 const isUnticked=(m,acc)=>Array.isArray(m.unticked)&&m.unticked.includes(acc);
 
 /* ---------- money helpers ---------- */
@@ -287,10 +295,14 @@ function riskOf(id){
   for(const m of S.matches)for(const b of m.bets||[])if(b.accountId===id&&(b.bookieVoid||(b.status==='void'&&m.status!=='void')))out.push(m);
   return out;
 }
+/* a.risk: 'risky' or 'safe' set by you; otherwise risky = had a bookie void (old a.flagged counts as 'risky') */
+const autoRisky=id=>riskOf(id).length>0;
+function accRisky(id){const a=accById(id);if(!a)return false;const o=a.risk||(a.flagged?'risky':null);return o?o==='risky':autoRisky(id)}
 function riskBadge(id){
-  const a=accById(id),r=riskOf(id);if(!r.length&&!(a&&a.flagged))return '';
-  const why=[r.length?`Bet voided by the bookie on: ${r.map(m=>teamName(m,'A')+' vs '+teamName(m,'B')).join(', ')}`:'',a&&a.flagged?'Flagged by you':''].filter(Boolean).join('. ');
-  return ` <span class="pill bad risk" title="${esc(why)}">⚠ Risky${r.length?` · ${r.length} voided`:''}</span>`;
+  const a=accById(id);if(!a)return '';
+  const r=riskOf(id),risky=accRisky(id),manual=a.risk||(a.flagged?'risky':null);
+  const why=(r.length?`Bet voided by the bookie on: ${r.map(m=>teamName(m,'A')+' vs '+teamName(m,'B')).join(', ')}. `:'')+(manual?`Set to ${manual} by you. `:'')+`Click to mark ${risky?'safe':'risky'}.`;
+  return ` <button class="pill risk ${risky?'bad':'safe'}" data-act="risk-toggle" data-id="${a.id}" title="${esc(why)}">${risky?`⚠ Risky${r.length?` · ${r.length} voided`:''}`:'Safe'}</button>`;
 }
 const liveStake=m=>m.bets.reduce((t,b)=>t+(b.status==='void'?0:b.stake),0);
 function betStatus(m,b){
@@ -304,7 +316,12 @@ function betCell(m,b,i){
   const a=accById(b.accountId),s=betStatus(m,b);
   const pill={open:'<span class="pill lock">Open</span>',void:'<span class="pill muted">Void · refunded</span>',
     won:`<span class="pill ok">Won ${fmt(b.stake*b.odds)}</span>`,lost:'<span class="pill bad">Lost</span>'}[s];
-  const btn=s==='open'&&m.status==='placed'?`<button class="btn sm ghost" data-act="void-bet" data-id="${m.id}" data-bet="${i}">Void</button>`:'';
+  const live=s==='open'&&m.status==='placed';
+  if(live&&editingBet===m.id+':'+i)return `<td><div class="bet-cell bet-edit"><b>${esc(a?a.name:b.accountName)}</b>
+    <span class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" id="be-s-${m.id}-${i}" value="${inVal(b.stake)}" aria-label="Stake"></span>
+    <span class="muted">@</span><input type="number" step="0.01" min="1" id="be-o-${m.id}-${i}" value="${esc(b.odds)}" aria-label="Odds" style="width:80px">
+    <button class="btn sm pri" data-act="bet-save" data-id="${m.id}" data-bet="${i}">Save</button><button class="btn sm ghost" data-act="bet-cancel">Cancel</button></div></td>`;
+  const btn=live?`<button class="btn sm ghost" data-act="bet-edit" data-id="${m.id}" data-bet="${i}">Edit</button><button class="btn sm ghost" data-act="void-bet" data-id="${m.id}" data-bet="${i}" title="The bookie voided it: refund and mark the account risky">Void</button><button class="btn sm ghost danger" data-act="bet-del" data-id="${m.id}" data-bet="${i}" title="Entered by mistake: remove and refund the stake">Remove</button>`:'';
   return `<td${s==='void'?' class="voided"':''}><div class="bet-cell"><b>${esc(a?a.name:b.accountName)}</b>${riskBadge(b.accountId)}<span class="num">${fmt(b.stake)} @ ${esc(b.odds)}</span>${pill}${btn}</div></td>`;
 }
 /* every account on its team's column; live bets first, voided ones last */
@@ -323,7 +340,18 @@ function sideTable(m){
     const nA=sum('A').length,nB=sum('B').length;
     const res=side=>sum(side).reduce((t,b)=>t+b.stake*b.odds,0)-tot;
     const pf=side=>{const v=res(side);return `<span>If ${esc(teamName(m,side))} win </span><b class="num ${v>=0?'g':'x'}">${fmt(v,true)}</b>`};
-    summary=`<div class="kv">${live.length?`<div>${pf('A')}</div><div>${pf('B')}</div>`:''}</div>`+
+    const ret=side=>sum(side).reduce((t,b)=>t+b.stake*b.odds,0);
+    const low=ret('A')<ret('B')?'A':'B',hi=low==='A'?'B':'A',lowOdds=+(sum(low).slice(-1)[0]?.odds||(low==='A'?m.oddsA:m.oddsB))||0;
+    const even=lowOdds>1?r2((ret(hi)-ret(low))/lowOdds):0;
+    const evenHint=live.length&&even>=1?`<div class="note">To even out both results, add <b class="num">${fmt(even)}</b> on ${esc(teamName(m,low))} @ ${lowOdds}. <button class="btn sm" data-act="bet-prefill" data-id="${m.id}" data-side="${low}" data-stake="${even}" data-odds="${lowOdds}">Use this</button></div>`:'';
+    const accOpts=S.accounts.map(a=>`<option value="${a.id}">${esc(a.name||'(unnamed)')} · ${fmt(a.balance||0)} free</option>`).join('');
+    const addForm=`<div class="bet-add"><span class="muted" style="font-size:13px">Add a bet you placed:</span>
+      <select id="ba-acc-${m.id}" aria-label="Account">${accOpts}</select>
+      <select id="ba-side-${m.id}" data-ba-side="${m.id}" aria-label="Team"><option value="A">${esc(teamName(m,'A'))}</option><option value="B">${esc(teamName(m,'B'))}</option></select>
+      <span class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" id="ba-stake-${m.id}" placeholder="stake" aria-label="Stake"></span>
+      <span class="muted">@</span><input type="number" step="0.01" min="1" id="ba-odds-${m.id}" value="${esc(m.oddsA)}" aria-label="Odds" style="width:80px">
+      <button class="btn sm pri" data-act="bet-add" data-id="${m.id}">Add bet</button></div>`;
+    summary=`<div class="kv">${live.length?`<div>${pf('A')}</div><div>${pf('B')}</div>`:''}</div>`+evenHint+addForm+
       (nA!==nB?`<div class="note warn">Unhedged: ${Math.abs(nA-nB)} more bet${Math.abs(nA-nB)>1?'s':''} on ${esc(teamName(m,nA>nB?'A':'B'))} than on ${esc(teamName(m,nA>nB?'B':'A'))}. The Planner suggests a cover bet.</div>`:'');
   }else if(m.status==='settled')summary=`<div class="kv"><div><span>Match result </span><b class="num ${(m.profit||0)>=0?'g':'x'}">${fmt(m.profit||0,true)}</b></div></div>`;
   return `<div class="tbl-wrap"><table class="sides"><thead><tr><th>On ${esc(teamName(m,'A'))}</th><th>On ${esc(teamName(m,'B'))}</th></tr></thead><tbody>${rows}</tbody><tfoot><tr>${foot}</tr></tfoot></table></div>${summary}`;
@@ -465,7 +493,7 @@ function plan(){
   const todo=S.matches.filter(m=>m.status==='draft'||m.status==='placed').map((m,i)=>({m,i})).sort((x,y)=>{
     const tx=x.m.time||'~',ty=y.m.time||'~';return tx<ty?-1:tx>ty?1:x.i-y.i}).map(x=>x.m);
   const out=[];
-  riskySet=new Set(S.accounts.filter(a=>a.flagged||riskOf(a.id).length).map(a=>a.id));
+  riskySet=new Set(S.accounts.filter(a=>accRisky(a.id)).map(a=>a.id));
   for(const m of todo){
     const skip=new Set(m.skip||[]);
     const placed=m.status==='placed';
@@ -566,7 +594,7 @@ function renderMoney(){
       <td class="r"><div class="cur-in in-num" style="margin-left:auto"><em>${sym()}</em><input type="number" step="0.01" id="acc-b-${a.id}" data-acc="${a.id}" data-f="balance" value="${inVal(a.balance)}" aria-label="Free balance of ${esc(a.name)}"></div></td>
       <td class="r num">${l>0?`<span class="pill lock">${fmt(l)}</span>`:'<span class="muted">—</span>'}</td>
       <td class="r num">${fmt((+a.balance||0)+l)}</td>
-      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end;align-items:center">${riskBadge(a.id)}<button class="btn sm ghost" data-act="flag" data-id="${a.id}" title="Mark this account as risky yourself">${a.flagged?'Unflag':'Flag'}</button><button class="btn sm ghost danger" data-act="del-acc" data-id="${a.id}">Delete</button></div></td>
+      <td class="r"><div style="display:flex;gap:6px;justify-content:flex-end;align-items:center">${riskBadge(a.id)}<button class="btn sm ghost danger" data-act="del-acc" data-id="${a.id}">Delete</button></div></td>
     </tr>`}).join('');
   el.innerHTML=`
   <div class="sec-head"><div><h2>Money</h2><p>Every account and the crypto it holds right now. Free money can be bet or sent to another account. Money in bets comes back when you settle the match.</p></div>
@@ -807,6 +835,8 @@ function xfersOf(m){
 }
 
 document.addEventListener('change',e=>{
+  if(e.target.dataset.baSide){const m=S.matches.find(x=>x.id===e.target.dataset.baSide);const o=document.getElementById('ba-odds-'+m.id);
+    const last=m.bets.filter(b=>b.side===e.target.value).slice(-1)[0];if(o)o.value=last?last.odds:(e.target.value==='A'?m.oddsA:m.oddsB);return}
   const t=e.target;
   if(t.dataset.chk||t.dataset.chkAll){
     const mid=t.dataset.chk||t.dataset.chkAll,y=scrollY;
@@ -925,7 +955,9 @@ document.addEventListener('click',e=>{
     }
     markDirty();renderAll();scrollTo(0,y);return}
   if(act==='norisky'){const m=S.matches.find(x=>x.id===id);if(!m)return;m.noRisky=!m.noRisky;markDirty();renderAll();scrollTo(0,y);return}
-  if(act==='flag'){const a=accById(id);if(!a)return;a.flagged=!a.flagged;addLog(`${a.flagged?'Flagged':'Unflagged'} ${a.name} as risky`);markDirty();renderAll();scrollTo(0,y);return}
+  if(act==='risk-toggle'){const a=accById(id);if(!a)return;const now=accRisky(id);delete a.flagged;
+    const want=now?'safe':'risky';if((want==='risky')===autoRisky(id))delete a.risk;else a.risk=want;
+    addLog(`Marked ${a.name} as ${want}`);renderAll();scrollTo(0,y);save();return}
   if(act==='skip'||act==='unskip'){
     const m=S.matches.find(x=>x.id===id);if(!m)return;const acc=b.dataset.acc;
     m.skip=(m.skip||[]).filter(x=>x!==acc);if(act==='skip')m.skip.push(acc);
@@ -948,6 +980,38 @@ document.addEventListener('click',e=>{
     const a=accById(x.accountId);if(a)a.balance=r2(a.balance+x.stake);x.status='void';x.bookieVoid=true;
     addLog(`Voided ${a?a.name:x.accountName}'s bet on ${teamName(m,x.side)}: ${fmt(x.stake)} back to ${a?a.name:x.accountName}`);
     renderAll();scrollTo(0,y);save();return}
+  if(act==='bet-edit'){editingBet=id+':'+b.dataset.bet;renderAll();scrollTo(0,y);document.getElementById(`be-s-${id}-${b.dataset.bet}`)?.focus();return}
+  if(act==='bet-cancel'){editingBet=null;renderAll();scrollTo(0,y);return}
+  if(act==='bet-save'||act==='bet-add'){
+    const m=S.matches.find(x=>x.id===id);if(!m)return;
+    let x,a,stake,odds,side;
+    if(act==='bet-save'){x=m.bets[+b.dataset.bet];if(!x)return;a=accById(x.accountId);stake=+document.getElementById(`be-s-${id}-${b.dataset.bet}`).value;odds=+document.getElementById(`be-o-${id}-${b.dataset.bet}`).value;side=x.side}
+    else{a=accById(document.getElementById('ba-acc-'+id).value);side=document.getElementById('ba-side-'+id).value;stake=+document.getElementById('ba-stake-'+id).value;odds=+document.getElementById('ba-odds-'+id).value}
+    if(!a||!(stake>0)||!(odds>1)){const t=b.textContent;b.textContent=!(stake>0)?'Enter a stake':'Odds must be above 1';setTimeout(()=>b.textContent=t,2000);return}
+    stake=r2(fromDisp(stake));
+    const more=act==='bet-save'?r2(stake-x.stake):stake; // extra money this takes from the account
+    const short=r2(more-(+a.balance||0));
+    if(short>0.004&&!confirmTwice(b,act+id+(b.dataset.bet||''),`${a.name} had ${fmt(short)} extra? Save`))return;
+    if(short>0.004){a.balance=r2(a.balance+short);addLog(`Found ${fmt(short)} extra in ${a.name} (not tracked before)`)}
+    a.balance=r2(a.balance-more);
+    if(act==='bet-save'){addLog(`Edited ${a.name}'s bet on ${teamName(m,side)}: ${fmt(x.stake)} @ ${x.odds} → ${fmt(stake)} @ ${odds}`);x.stake=stake;x.odds=odds;editingBet=null}
+    else{m.bets.push({accountId:a.id,accountName:a.name,side,stake,odds,status:'open'});addLog(`Added ${a.name}'s bet on ${teamName(m,side)}: ${fmt(stake)} @ ${odds} (${teamName(m,'A')} vs ${teamName(m,'B')})`)}
+    renderAll();scrollTo(0,y);save();return}
+  if(act==='bet-del'){
+    const m=S.matches.find(x=>x.id===id);const i=+b.dataset.bet;const x=m&&m.bets[i];if(!x||x.status!=='open')return;
+    if(!confirmTwice(b,'bd-'+id+i,'Remove + refund?'))return;
+    const a=accById(x.accountId);if(a)a.balance=r2(a.balance+x.stake);
+    m.bets.splice(i,1);if(editingBet&&editingBet.startsWith(id+':'))editingBet=null;
+    addLog(`Removed ${a?a.name:x.accountName}'s bet on ${teamName(m,x.side)} (entered by mistake): ${fmt(x.stake)} refunded`);
+    if(!m.bets.length){m.status='draft';delete m.placedAt}
+    renderAll();scrollTo(0,y);save();return}
+  if(act==='bet-prefill'){
+    const id2=id;document.getElementById('ba-side-'+id2).value=b.dataset.side;
+    document.getElementById('ba-stake-'+id2).value=inVal(+b.dataset.stake);document.getElementById('ba-odds-'+id2).value=b.dataset.odds;
+    const acc=document.getElementById('ba-acc-'+id2);const m=S.matches.find(x=>x.id===id2);
+    const free=S.accounts.filter(a=>!(m.bets||[]).some(q=>q.accountId===a.id&&q.status==='open')).sort((p,q)=>(q.balance||0)-(p.balance||0))[0];
+    if(free)acc.value=free.id;
+    document.getElementById('ba-stake-'+id2).focus();return}
   if(act==='bfilter'){betFilter=b.dataset.v;renderBets();return}
   if(act==='round'||act==='clear-custom'){
     const m=S.matches.find(x=>x.id===id);if(!m)return;
