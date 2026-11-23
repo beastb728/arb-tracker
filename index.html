@@ -258,6 +258,7 @@ const isUnticked=(m,acc)=>Array.isArray(m.unticked)&&m.unticked.includes(acc);
 const isUSD=()=>S.settings.currency==='USD';
 const rate=()=>(+S.settings.rate>0?+S.settings.rate:93);
 const feeInr=()=>r2((+S.settings.feeUsd||0)*rate());
+const minXfer=()=>Math.max(0,+S.settings.minXfer||0); // smallest amount one transfer may send, in INR (0 = any)
 const toDisp=inr=>isUSD()?inr/rate():inr;
 const fromDisp=v=>isUSD()?v*rate():v;
 const sym=()=>isUSD()?'$':'₹';
@@ -414,18 +415,21 @@ function assignWith(bal,n,st,fee,pool,ids,pref){
   for(const id of ids){const s=bal[id]-(need[id]||0);if(s< -0.004)deficits.push({id,amt:ceil2(-s)});else if(s>0.004)surplus.push({id,amt:s})}
   deficits.sort((x,y)=>y.amt-x.amt);
   const transfers=[];
+  const min=minXfer();
   for(const d of deficits){
     let left=d.amt;
     while(left>0.004){
-      // one sender for the whole amount if possible (smallest that fits), else the richest
-      const fits=surplus.filter(s=>s.amt-fee>=left-0.004).sort((x,y)=>x.amt-y.amt);
+      // one sender for the whole amount if possible (smallest that fits), else the richest.
+      // Every transfer must be at least the minimum, so a small top-up sends the minimum instead.
+      const want=Math.max(left,min);
+      const fits=surplus.filter(s=>s.amt-fee>=want-0.004).sort((x,y)=>x.amt-y.amt);
       surplus.sort((x,y)=>y.amt-x.amt);
-      const donor=fits[0]||surplus.find(s=>s.amt-fee>0.004);
+      const donor=fits[0]||surplus.find(s=>s.amt-fee>=Math.max(min,0.005));
       if(!donor)return{fail:'money'};
-      const amt=r2(Math.min(left,donor.amt-fee));
+      const amt=r2(Math.max(Math.min(left,donor.amt-fee),min));
       if(amt<=0)return{fail:'money'};
       transfers.push({from:donor.id,to:d.id,amount:amt});
-      donor.amt-=amt+fee;left=r2(left-amt);
+      donor.amt-=amt+fee;left=Math.max(0,r2(left-amt));
     }
   }
   const nb={...bal};
@@ -565,6 +569,7 @@ function renderMoney(){
   <div class="card settings">
     <label>1 US dollar in rupees<div class="cur-in"><em>₹</em><input type="number" step="0.01" id="set-rate" data-set="rate" value="${esc(S.settings.rate)}"></div></label>
     <label>Fee per transfer (USD)<div class="cur-in"><em>$</em><input type="number" step="0.01" id="set-fee" data-set="feeUsd" value="${esc(S.settings.feeUsd)}"></div><span id="fee-hint" class="num">${'≈ ₹'+feeInr().toFixed(2)+' per transfer'}</span></label>
+    <label>Minimum transfer<div class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" id="set-min" data-set="minXfer" value="${inVal(S.settings.minXfer||0)}"></div><span class="muted" style="font-size:12px">0 means any amount</span></label>
     <label>Fees paid so far<b class="num" style="color:var(--ink);font-size:16px;padding-top:6px">${fmt(S.feesPaid||0)}</b></label>
   </div>
   ${S.log.length?`<h3 style="font-size:16px;margin-top:8px">Activity</h3><div class="card"><ul class="log" style="margin-top:-1px">${S.log.slice(0,30).map(l=>`<li><time>${esc(new Date(l.at).toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}))}</time><span>${esc(l.text)}</span></li>`).join('')}</ul></div>`:''}`;
@@ -687,7 +692,9 @@ function renderPlanner(){
     const addRow=`<li class="xf-add"><span class="muted" style="font-size:13px">Add a transfer:</span><select id="xf-from-${m.id}" aria-label="From">${opts(S.accounts.find(a=>!r.bets.some(b=>b.accountId===a.id))?.id)}</select><span class="arrow">→</span><select id="xf-to-${m.id}" aria-label="To">${opts(firstBettor)}</select><span class="cur-in xf-amt"><em>${sym()}</em><input type="number" step="0.01" min="0" inputmode="decimal" id="xf-amt-${m.id}" placeholder="amount" aria-label="Amount"></span><button class="btn sm" data-act="xf-add" data-id="${m.id}">Add</button></li>`;
     const negTot=r.neg?r.neg.reduce((t,n)=>t+n.amt,0):0;
     const negNote=r.neg&&r.neg.length?`<div class="note warn">With these transfers, ${r.neg.map(n=>`<b>${esc(accById(n.id)?.name)}</b> is ${fmt(n.amt)} short`).join(', ')}. Did ${r.neg.length>1?'these accounts':'this account'} have that extra money (from winnings, cashback, or anything the tracker doesn't know about)? If yes, press Mark bets placed: the extra ${fmt(negTot)} is added to ${r.neg.length>1?'their balances':'its balance'} first, so nothing goes below zero. If no, change the transfers.</div>`:'';
-    const xf=`${r.custom?`<div class="note">You changed these transfers. Amounts are what arrives; the sender also pays the fee.</div>`:''}${negNote}${!r.transfers.length?`<div class="note good" style="margin-bottom:6px">No transfers needed. Every account already has enough.</div>`:''}<ul class="xfer">${doneRows}${xfRows}${addRow}</ul>${r.custom?`<div><button class="btn sm ghost" data-act="xf-reset" data-id="${m.id}">Back to suggested transfers${r.suggested?` (${r.suggested.length})`:''}</button></div>`:''}`;
+    const low=minXfer()>0?r.transfers.filter(t=>t.amount<minXfer()-0.004):[];
+    const lowNote=low.length?`<div class="note warn">${low.length} transfer${low.length>1?'s are':' is'} below your minimum of ${fmt(minXfer())}: ${low.map(t=>`${esc(accById(t.from)?.name)} → ${esc(accById(t.to)?.name)} ${fmt(t.amount)}`).join(', ')}.</div>`:'';
+    const xf=`${lowNote}${r.custom?`<div class="note">You changed these transfers. Amounts are what arrives; the sender also pays the fee.</div>`:''}${negNote}${!r.transfers.length?`<div class="note good" style="margin-bottom:6px">No transfers needed. Every account already has enough.</div>`:''}<ul class="xfer">${doneRows}${xfRows}${addRow}</ul>${r.custom?`<div><button class="btn sm ghost" data-act="xf-reset" data-id="${m.id}">Back to suggested transfers${r.suggested?` (${r.suggested.length})`:''}</button></div>`:''}`;
     const profit=r.st.profit*r.P, feeTot=fee*r.transfers.length, staked=r.bets.reduce((t,b)=>t+b.stake,0);
     const ps=r.bets.filter(b=>b.group==='safe').length/2, pr=r.bets.filter(b=>b.group==='risky').length/2;
     const what=[r.C?`${r.C} cover bet${r.C>1?'s':''}`:'',ps?`${ps} safe pair${ps>1?'s':''}`:'',pr?`${pr} risky pair${pr>1?'s':''}`:''].filter(Boolean).join(' + ')+(r.P?` (${r.P} of ${r.req} ${r.placed?'new ':''}pairs)`:'');
@@ -703,7 +710,7 @@ function renderPlanner(){
     </div>`}).join('');
   const leftRows=S.accounts.map(a=>`<tr><td>${esc(a.name)}</td><td class="r num">${fmt(a.balance||0)}</td><td class="r num">${fmt(left[a.id]??0)}</td></tr>`).join('');
   el.innerHTML=`
-  <div class="sec-head"><div><h2>Planner</h2><p>Uses the free balances on the Money tab and fills matches earliest first, using as many pairs as the money allows (your ${S.accounts.length} accounts make ${Math.floor(S.accounts.length/2)} pairs at most). Each account bets once per match, and each pair is two different accounts on opposite sides. Transfers are kept as few as possible, since each one costs ${fmt(fee)}.</p></div></div>
+  <div class="sec-head"><div><h2>Planner</h2><p>Uses the free balances on the Money tab and fills matches earliest first, using as many pairs as the money allows (your ${S.accounts.length} accounts make ${Math.floor(S.accounts.length/2)} pairs at most). Each account bets once per match, and each pair is two different accounts on opposite sides. Transfers are kept as few as possible, since each one costs ${fmt(fee)}${minXfer()?`, and none is below your ${fmt(minXfer())} minimum (a smaller top-up sends the minimum instead)`:''}.</p></div></div>
   ${!S.accounts.length?`<div class="card empty">Add your accounts on the Money tab first.</div>`:''}
   ${rows.length?cards:`<div class="card empty">No matches are being planned. Add one on the Matches tab.</div>`}
   <div class="card quick-acc"><span><b>New account?</b> <span class="muted">Add it here and the plan updates with it.</span></span>
@@ -780,7 +787,7 @@ document.addEventListener('input',e=>{
     else m[f]=t.value;
     markDirty();refreshLight();
   }else if(t.dataset.set){
-    S.settings[t.dataset.set]=t.value===''?'':+t.value;
+    S.settings[t.dataset.set]=t.value===''?'':(t.dataset.set==='minXfer'?r2(fromDisp(+t.value)):+t.value);
     markDirty();refreshLight();renderTotals();
   }
 });
@@ -900,7 +907,8 @@ document.addEventListener('click',e=>{
     else if(act==='xf-del')xfersOf(m).splice(+b.dataset.i,1);
     else{
       const from=document.getElementById('xf-from-'+id).value,to=document.getElementById('xf-to-'+id).value,v=+document.getElementById('xf-amt-'+id).value;
-      if(from===to||!(v>0)){const t=b.textContent;b.textContent=from===to?'Pick two accounts':'Enter an amount';setTimeout(()=>b.textContent=t,2000);return}
+      const tooLow=minXfer()>0&&fromDisp(v)<minXfer()-0.004;
+      if(from===to||!(v>0)||tooLow){const t=b.textContent;b.textContent=from===to?'Pick two accounts':tooLow?`Minimum is ${fmt(minXfer())}`:'Enter an amount';setTimeout(()=>b.textContent=t,2000);return}
       xfersOf(m).push({from,to,amount:r2(fromDisp(v))});
     }
     markDirty();renderAll();scrollTo(0,y);return}
