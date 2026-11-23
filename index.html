@@ -244,7 +244,8 @@ const clone=o=>JSON.parse(JSON.stringify(o));
 
 let S=defaultState(), dirty=false, mode='loading', docRef=null, pendingRemote=null, saving=false, saveAgain=false;
 let armed=null, armTimer=null, lastPlan=[], tab='money', notes={};
-let unchecked=new Set(); // "matchId:accountId" of planned bets you have not placed (this device only)
+/* planned bets you have unticked are kept on the match (m.unticked = account ids), so every device sees them */
+const isUnticked=(m,acc)=>Array.isArray(m.unticked)&&m.unticked.includes(acc);
 
 /* ---------- money helpers ---------- */
 const isUSD=()=>S.settings.currency==='USD';
@@ -446,7 +447,7 @@ function plan(){
       const r=tryAssign(bal,n(C,P),st,fee,pool,ids);if(!r.fail){res={...r,C,P};break outer}}
     const full=res&&res.C===reqC&&res.P===req;
     const need=full?null:shortfall(bal,n(reqC,req),st,fee,pool,ids);
-    const off=res?res.bets.filter(x=>unchecked.has(m.id+':'+x.accountId)):[];
+    const off=res?res.bets.filter(x=>isUnticked(m,x.accountId)):[];
     if(res&&(Array.isArray(m.xfers)||off.length)){
       // the user's own transfers replace the suggested ones; unticked bets are not paid for
       const nb={...bal};
@@ -637,7 +638,7 @@ function renderPlanner(){
     const short=(r.C<r.reqC||r.P<r.req)?`<div class="note ${r.C+r.P?'warn':'bad'}">${r.C+r.P?`Free money covers ${got}.`:`Not enough free money${i>0?' after the earlier matches':''}.`} ${addTxt}</div>`:'';
     const cover=r.C?`<div class="note warn">${r.liveA} live on ${esc(teamName(m,'A'))}, ${r.liveB} on ${esc(teamName(m,'B'))}. ${r.C>1?`The ${r.C} ${esc(teamName(m,r.coverSide))} bets below cover`:`One ${esc(teamName(m,r.coverSide))} bet below covers`} the unhedged side.</div>`:'';
     if(!r.C&&!r.P)return `<div class="card plan"><h3>${head}</h3><div class="meta">${esc(fmtTime(m.time))}</div>${short}${skipped}${r.noRisky?`<div class="chips"><button class="chip on" data-act="norisky" data-id="${m.id}">Risky accounts left out · use them again</button></div>`:''}</div>`;
-    const isOn=b=>!unchecked.has(m.id+':'+b.accountId);
+    const isOn=b=>!isUnticked(m,b.accountId);
     const nOn=r.bets.filter(isOn).length;
     const betRow=b=>`<tr${isOn(b)?'':' class="off"'}><td class="chk"><input type="checkbox" data-chk="${m.id}" data-acc="${b.accountId}"${isOn(b)?' checked':''} aria-label="Placed ${esc(accById(b.accountId)?.name)}'s bet"></td><td>${esc(accById(b.accountId)?.name)}${riskBadge(b.accountId)}</td><td><span class="${b.side==='A'?'side-a':''}">${esc(teamName(m,b.side))}</span> @ ${esc(b.side==='A'?(r.st.oddsA??m.oddsA):(r.st.oddsB??m.oddsB))}</td><td class="r num">${fmt(b.stake)}</td><td class="r"><button class="btn sm ghost" data-act="skip" data-id="${m.id}" data-acc="${b.accountId}" title="This account can't bet on this match: pick another">Can't place</button></td></tr>`;
     const GROUPS={cover:['Cover bets','Even out the sides of bets already placed.'],safe:['Safe pairs','No bet has ever been voided on these accounts.'],risky:['Risky pairs','These accounts have had bets voided before, so they only pair with each other. If a bookie voids some of these, your safe pairs stay hedged.']};
@@ -753,9 +754,12 @@ document.addEventListener('change',e=>{
   const t=e.target;
   if(t.dataset.chk||t.dataset.chkAll){
     const mid=t.dataset.chk||t.dataset.chkAll,y=scrollY;
-    if(t.dataset.chk){const k=mid+':'+t.dataset.acc;t.checked?unchecked.delete(k):unchecked.add(k)}
-    else{const r=lastPlan.find(x=>x.m.id===mid);if(r)for(const x of r.bets){const k=mid+':'+x.accountId;t.checked?unchecked.delete(k):unchecked.add(k)}}
-    recompute();renderPlanner();scrollTo(0,y);return}
+    const m=S.matches.find(x=>x.id===mid);if(!m)return;
+    const set=new Set(m.unticked||[]);
+    const accs=t.dataset.chk?[t.dataset.acc]:(lastPlan.find(x=>x.m.id===mid)?.bets||[]).map(x=>x.accountId);
+    for(const a of accs)t.checked?set.delete(a):set.add(a);
+    m.unticked=[...set];
+    markDirty();recompute();renderPlanner();renderTotals();scrollTo(0,y);save();return}
   const xi=e.target.dataset.xfI;
   if(xi!=null){const m=S.matches.find(x=>x.id===e.target.dataset.xfM);if(!m)return;
     const xs=xfersOf(m),v=+e.target.value;
@@ -789,7 +793,7 @@ document.addEventListener('click',e=>{
   if(act==='del-match'){if(!confirmTwice(b,'del-m-'+id,'Click again to delete'))return;S.matches=S.matches.filter(x=>x.id!==id);markDirty();renderAll();scrollTo(0,y);return}
   if(act==='place'){
     const r=lastPlan.find(x=>x.m.id===id);if(!r||!r.bets.length)return;
-    const chosen=r.bets.filter(x=>!unchecked.has(id+':'+x.accountId));if(!chosen.length)return;
+    const chosen=r.bets.filter(x=>!isUnticked(r.m,x.accountId));if(!chosen.length)return;
     const neg=r.neg||[],extra=neg.reduce((t,n)=>t+n.amt,0);
     if(!confirmTwice(b,'place-'+id,neg.length?`Yes, they had ${fmt(extra)} extra: place`:`Confirm: ${r.transfers.length} transfer${r.transfers.length===1?'':'s'}, ${chosen.length} bets`))return;
     const fee=feeInr(),m=r.m;
@@ -805,7 +809,7 @@ document.addEventListener('click',e=>{
     if(!was){m.status='placed';m.placedAt=new Date().toISOString()}
     const cA=chosen.filter(x=>x.side==='A').length,cB=chosen.length-cA;
     addLog(`${was?'Added':'Placed'} ${chosen.length} bet${chosen.length>1?'s':''} on ${teamName(m,'A')} vs ${teamName(m,'B')} (${cA} on ${teamName(m,'A')}, ${cB} on ${teamName(m,'B')}; ${fmt(chosen.reduce((t,x)=>t+x.stake,0))} staked, ${r.transfers.length} transfers)${chosen.length<r.bets.length?`, ${r.bets.length-chosen.length} unticked`:''}`);
-    for(const k of [...unchecked])if(k.startsWith(id+':'))unchecked.delete(k);
+    delete m.unticked;
     renderAll();scrollTo(0,y);save();return}
   if(act==='xf-del'||act==='xf-add'||act==='xf-reset'){
     const m=S.matches.find(x=>x.id===id);if(!m)return;
