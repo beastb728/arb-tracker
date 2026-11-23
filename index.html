@@ -132,6 +132,8 @@ table.sides td.voided{opacity:.6}
 td.chk,th.chk{width:1%;padding-right:0}
 td.chk input,th.chk input{width:18px;height:18px;accent-color:var(--accent);cursor:pointer}
 tr.off td:not(.chk){opacity:.45;text-decoration:line-through}
+tr.grp td{background:var(--surface-2);font-size:13px;padding-top:8px;padding-bottom:8px}
+tr.grp-safe b{color:var(--good)} tr.grp-risky b{color:var(--bad)} tr.grp-cover b{color:var(--warn)}
 .pill.risk{cursor:help}
 table.sides tfoot td{border-top:1px solid var(--line);font-size:13px}
 .vs-cell{color:var(--muted);font-family:var(--f-display);font-weight:800;font-size:12px;text-align:center;width:1%}
@@ -355,13 +357,28 @@ function roundOptions(m){
 
 /* ---------- planner ---------- */
 /* n = {A:count,B:count} bets to place; pool = accounts allowed to bet; any account can send money */
+/* Safe accounts pair only with safe ones and risky only with risky, so a voided risky bet
+   can never break a safe pair. Cover bets use leftover safe accounts first. */
+let riskySet=new Set();
+const isRisky=id=>riskySet.has(id);
+function groupPick(bal,pool,n,big){
+  const byBal=(x,y)=>bal[y]-bal[x];
+  const safe=pool.filter(id=>!isRisky(id)).sort(byBal), risky=pool.filter(isRisky).sort(byBal);
+  const Ps=Math.min(n.P,Math.floor(safe.length/2)), Pr=n.P-Ps;
+  if(Pr>Math.floor(risky.length/2))return null;
+  const small=big==='A'?'B':'A', out=[];
+  const pairs=(list,k,group)=>{for(let i=0;i<k;i++)out.push({accountId:list[i],side:big,group});for(let i=k;i<2*k;i++)out.push({accountId:list[i],side:small,group})};
+  pairs(safe,Ps,'safe');pairs(risky,Pr,'risky');
+  const rest=safe.slice(2*Ps).concat(risky.slice(2*Pr));
+  if(rest.length<n.C)return null;
+  for(let i=0;i<n.C;i++)out.push({accountId:rest[i],side:n.coverSide,group:'cover'});
+  return out;
+}
 function tryAssign(bal,n,st,fee,pool,ids){
-  const sorted=[...pool].sort((x,y)=>bal[y]-bal[x]);
-  if(sorted.length<n.A+n.B)return{fail:'accounts'};
-  const big=st.bigSide, small=big==='A'?'B':'A';
-  const roles=[];for(let i=0;i<n[big];i++)roles.push(big);for(let i=0;i<n[small];i++)roles.push(small);
+  const picks=groupPick(bal,pool,n,st.bigSide);
+  if(!picks)return{fail:'accounts'};
   const stakeOf=s=>s==='A'?st.stakeA:st.stakeB;
-  const assign=roles.map((side,i)=>({accountId:sorted[i],side,stake:stakeOf(side)}));
+  const assign=picks.map(x=>({...x,stake:stakeOf(x.side)}));
   const need={};assign.forEach(x=>need[x.accountId]=x.stake);
   const deficits=[],surplus=[];
   for(const id of ids){const s=bal[id]-(need[id]||0);if(s< -0.004)deficits.push({id,amt:ceil2(-s)});else if(s>0.004)surplus.push({id,amt:s})}
@@ -404,26 +421,31 @@ function plan(){
   const todo=S.matches.filter(m=>m.status==='draft'||m.status==='placed').map((m,i)=>({m,i})).sort((x,y)=>{
     const tx=x.m.time||'~',ty=y.m.time||'~';return tx<ty?-1:tx>ty?1:x.i-y.i}).map(x=>x.m);
   const out=[];
+  riskySet=new Set(S.accounts.filter(a=>a.flagged||riskOf(a.id).length).map(a=>a.id));
   for(const m of todo){
     const skip=new Set(m.skip||[]);
     const placed=m.status==='placed';
     const live=placed?liveBets(m):[];
     const busy=new Set(live.map(b=>b.accountId));
-    const pool=ids.filter(id=>!skip.has(id)&&!busy.has(id));
+    const free=ids.filter(id=>!skip.has(id)&&!busy.has(id));
+    const pool=m.noRisky?free.filter(id=>!isRisky(id)):free;
+    const riskyOut=m.noRisky?free.length-pool.length:0;
     const st=placed?placedStakes(m):stakes(m);
     const nA=live.filter(b=>b.side==='A').length, nB=live.length-nA;
     const coverSide=nA>nB?'B':'A', gap=Math.abs(nA-nB);
-    const reqC=Math.min(gap,pool.length), req=Math.floor((pool.length-reqC)/2);
-    const base={m,st,placed,skip:[...skip],coverSide,gap,reqC,req,liveA:nA,liveB:nB};
+    const reqC=Math.min(gap,pool.length);
+    const n=(C,P)=>({C,P,coverSide});
+    const maxP=C=>{for(let P=Math.floor((pool.length-C)/2);P>0;P--)if(groupPick(bal,pool,n(C,P),'A'))return P;return 0};
+    const req=maxP(reqC);
+    const base={m,st,placed,skip:[...skip],coverSide,gap,reqC,req,liveA:nA,liveB:nB,riskyOut,noRisky:!!m.noRisky};
     if(!st||(!placed&&!req)){out.push({...base,C:0,P:0,bets:[],transfers:[],reason:!st?'incomplete':'accounts'});continue}
     if(placed&&!reqC&&!req){if(gap)out.push({...base,C:0,P:0,bets:[],transfers:[],reason:'nocover'});continue}
-    const counts=(C,P)=>({A:P+(coverSide==='A'?C:0),B:P+(coverSide==='B'?C:0)});
     let res=null;
-    outer:for(let C=reqC;C>=0;C--)for(let P=Math.floor((pool.length-C)/2);P>=0;P--){
+    outer:for(let C=reqC;C>=0;C--)for(let P=maxP(C);P>=0;P--){
       if(C+P===0)continue;
-      const r=tryAssign(bal,counts(C,P),st,fee,pool,ids);if(!r.fail){res={...r,C,P};break outer}}
+      const r=tryAssign(bal,n(C,P),st,fee,pool,ids);if(!r.fail){res={...r,C,P};break outer}}
     const full=res&&res.C===reqC&&res.P===req;
-    const need=full?null:shortfall(bal,counts(reqC,req),st,fee,pool,ids);
+    const need=full?null:shortfall(bal,n(reqC,req),st,fee,pool,ids);
     const off=res?res.bets.filter(x=>unchecked.has(m.id+':'+x.accountId)):[];
     if(res&&(Array.isArray(m.xfers)||off.length)){
       // the user's own transfers replace the suggested ones; unticked bets are not paid for
@@ -443,7 +465,8 @@ function plan(){
 function shortfall(bal,n,st,fee,pool,ids){
   const to=[...ids].sort((x,y)=>bal[y]-bal[x])[0];
   const ok=x=>!tryAssign({...bal,[to]:bal[to]+x},n,st,fee,pool,ids).fail;
-  let lo=0,hi=n.A*st.stakeA+n.B*st.stakeB+fee*(n.A+n.B)+1;
+  const k=2*n.P+n.C;
+  let lo=0,hi=n.P*st.total+n.C*Math.max(st.stakeA,st.stakeB)+fee*k+1;
   for(let i=0;i<5&&!ok(hi);i++)hi*=2;
   if(!ok(hi))return null;
   for(let i=0;i<40;i++){const mid=(lo+hi)/2;if(ok(mid))hi=mid;else lo=mid}
@@ -606,17 +629,22 @@ function renderPlanner(){
     const head=`${r.placed?'<span class="pill lock">Already placed</span> ':''}${esc(m.name)}: ${title}`;
     const skipped=r.skip.length?`<div class="chips"><span class="muted" style="font-size:13px">Can't place from:</span>${r.skip.map(id=>`<button class="chip" data-act="unskip" data-id="${m.id}" data-acc="${id}" title="Put this account back">${esc(accById(id)?.name||'?')} ✕</button>`).join('')}</div>`:'';
     if(r.reason==='incomplete')return `<div class="card plan"><h3>${head}</h3><div class="muted">Fill in both odds and the max bet on the Matches tab first.</div></div>`;
-    if(r.reason==='accounts')return `<div class="card plan"><h3>${head}</h3><div class="muted">Not enough accounts left. Each pair is two accounts betting on opposite teams.</div>${skipped}</div>`;
-    if(r.reason==='nocover')return `<div class="card plan"><h3>${head}</h3><div class="note bad">${r.gap} bet${r.gap>1?'s':''} on ${esc(teamName(m,r.coverSide==='A'?'B':'A'))} ${r.gap>1?'have':'has'} no cover, and every account is already on this match or marked as can't place.</div>${skipped}</div>`;
+    if(r.reason==='accounts')return `<div class="card plan"><h3>${head}</h3><div class="muted">Not enough accounts left. Each pair is two accounts betting on opposite teams.</div>${skipped}${r.noRisky?`<div class="chips"><button class="chip on" data-act="norisky" data-id="${m.id}">Risky accounts left out · use them again</button></div>`:''}</div>`;
+    if(r.reason==='nocover')return `<div class="card plan"><h3>${head}</h3><div class="note bad">${r.gap} bet${r.gap>1?'s':''} on ${esc(teamName(m,r.coverSide==='A'?'B':'A'))} ${r.gap>1?'have':'has'} no cover, and every account is already on this match or marked as can't place.</div>${skipped}${r.noRisky?`<div class="chips"><button class="chip on" data-act="norisky" data-id="${m.id}">Risky accounts left out · use them again</button></div>`:''}</div>`;
     const want=[r.reqC?`cover ${r.reqC} unhedged bet${r.reqC>1?'s':''}`:'',r.req?`bet from ${r.req} ${r.placed?'more ':''}pair${r.req>1?'s':''}`:''].filter(Boolean).join(' and ');
     const addTxt=r.need?`Add <b class="num">${fmt(r.need.amt)}</b> to ${esc(accById(r.need.to)?.name||'an account')} to ${want}.`:'';
     const got=[r.C?(r.C===r.reqC?`the cover bet${r.C>1?'s':''}`:`${r.C} of ${r.reqC} cover bets`):'',r.P?`${r.P} of ${r.req} pair${r.req>1?'s':''}`:''].filter(Boolean).join(' and ');
     const short=(r.C<r.reqC||r.P<r.req)?`<div class="note ${r.C+r.P?'warn':'bad'}">${r.C+r.P?`Free money covers ${got}.`:`Not enough free money${i>0?' after the earlier matches':''}.`} ${addTxt}</div>`:'';
     const cover=r.C?`<div class="note warn">${r.liveA} live on ${esc(teamName(m,'A'))}, ${r.liveB} on ${esc(teamName(m,'B'))}. ${r.C>1?`The ${r.C} ${esc(teamName(m,r.coverSide))} bets below cover`:`One ${esc(teamName(m,r.coverSide))} bet below covers`} the unhedged side.</div>`:'';
-    if(!r.C&&!r.P)return `<div class="card plan"><h3>${head}</h3><div class="meta">${esc(fmtTime(m.time))}</div>${short}${skipped}</div>`;
+    if(!r.C&&!r.P)return `<div class="card plan"><h3>${head}</h3><div class="meta">${esc(fmtTime(m.time))}</div>${short}${skipped}${r.noRisky?`<div class="chips"><button class="chip on" data-act="norisky" data-id="${m.id}">Risky accounts left out · use them again</button></div>`:''}</div>`;
     const isOn=b=>!unchecked.has(m.id+':'+b.accountId);
     const nOn=r.bets.filter(isOn).length;
-    const bets=r.bets.slice().sort((x,y)=>x.side<y.side?-1:1).map(b=>`<tr${isOn(b)?'':' class="off"'}><td class="chk"><input type="checkbox" data-chk="${m.id}" data-acc="${b.accountId}"${isOn(b)?' checked':''} aria-label="Placed ${esc(accById(b.accountId)?.name)}'s bet"></td><td>${esc(accById(b.accountId)?.name)}${riskBadge(b.accountId)}</td><td><span class="${b.side==='A'?'side-a':''}">${esc(teamName(m,b.side))}</span> @ ${esc(b.side==='A'?(r.st.oddsA??m.oddsA):(r.st.oddsB??m.oddsB))}</td><td class="r num">${fmt(b.stake)}</td><td class="r"><button class="btn sm ghost" data-act="skip" data-id="${m.id}" data-acc="${b.accountId}" title="This account can't bet on this match: pick another">Can't place</button></td></tr>`).join('');
+    const betRow=b=>`<tr${isOn(b)?'':' class="off"'}><td class="chk"><input type="checkbox" data-chk="${m.id}" data-acc="${b.accountId}"${isOn(b)?' checked':''} aria-label="Placed ${esc(accById(b.accountId)?.name)}'s bet"></td><td>${esc(accById(b.accountId)?.name)}${riskBadge(b.accountId)}</td><td><span class="${b.side==='A'?'side-a':''}">${esc(teamName(m,b.side))}</span> @ ${esc(b.side==='A'?(r.st.oddsA??m.oddsA):(r.st.oddsB??m.oddsB))}</td><td class="r num">${fmt(b.stake)}</td><td class="r"><button class="btn sm ghost" data-act="skip" data-id="${m.id}" data-acc="${b.accountId}" title="This account can't bet on this match: pick another">Can't place</button></td></tr>`;
+    const GROUPS={cover:['Cover bets','Even out the sides of bets already placed.'],safe:['Safe pairs','No bet has ever been voided on these accounts.'],risky:['Risky pairs','These accounts have had bets voided before, so they only pair with each other. If a bookie voids some of these, your safe pairs stay hedged.']};
+    const nPairs=g=>r.bets.filter(b=>b.group===g).length/(g==='cover'?1:2);
+    const bets=['cover','safe','risky'].filter(g=>r.bets.some(b=>b.group===g)).map(g=>`<tr class="grp grp-${g}"><td colspan="5"><b>${GROUPS[g][0]} · ${nPairs(g)}</b> <span class="muted">${GROUPS[g][1]}</span></td></tr>`+r.bets.filter(b=>b.group===g).sort((x,y)=>x.side<y.side?-1:1).map(betRow).join('')).join('');
+    const nRiskyFree=r.bets.some(b=>b.group==='risky')||r.riskyOut;
+    const riskyToggle=nRiskyFree?`<div class="chips"><button class="chip${r.noRisky?' on':''}" data-act="norisky" data-id="${m.id}">${r.noRisky?`Risky accounts left out (${r.riskyOut}) · use them again`:'Leave out risky accounts'}</button></div>`:'';
     const opts=sel=>S.accounts.map(a=>`<option value="${a.id}"${a.id===sel?' selected':''}>${esc(a.name||'(unnamed)')}</option>`).join('');
     const firstBettor=r.bets[0]?.accountId;
     const xfRows=r.transfers.map((t,k)=>`<li><b>${esc(accById(t.from)?.name)}</b><span class="arrow">→</span><b>${esc(accById(t.to)?.name)}</b><span class="cur-in xf-amt"><em>${sym()}</em><input type="number" step="0.01" min="0" inputmode="decimal" value="${inVal(t.amount)}" data-xf-m="${m.id}" data-xf-i="${k}" aria-label="Amount ${esc(accById(t.from)?.name)} sends to ${esc(accById(t.to)?.name)}"></span><span class="muted">+ ${fmt(fee)} fee</span><button class="btn sm ghost" data-act="xf-del" data-id="${m.id}" data-i="${k}">Remove</button></li>`).join('');
@@ -625,7 +653,8 @@ function renderPlanner(){
     const negNote=r.neg&&r.neg.length?`<div class="note warn">With these transfers, ${r.neg.map(n=>`<b>${esc(accById(n.id)?.name)}</b> is ${fmt(n.amt)} short`).join(', ')}. Did ${r.neg.length>1?'these accounts':'this account'} have that extra money (from winnings, cashback, or anything the tracker doesn't know about)? If yes, press Mark bets placed: the extra ${fmt(negTot)} is added to ${r.neg.length>1?'their balances':'its balance'} first, so nothing goes below zero. If no, change the transfers.</div>`:'';
     const xf=`${r.custom?`<div class="note">You changed these transfers. Amounts are what arrives; the sender also pays the fee.</div>`:''}${negNote}${!r.transfers.length?`<div class="note good" style="margin-bottom:6px">No transfers needed. Every account already has enough.</div>`:''}<ul class="xfer">${xfRows}${addRow}</ul>${r.custom?`<div><button class="btn sm ghost" data-act="xf-reset" data-id="${m.id}">Back to suggested transfers${r.suggested?` (${r.suggested.length})`:''}</button></div>`:''}`;
     const profit=r.st.profit*r.P, feeTot=fee*r.transfers.length, staked=r.bets.reduce((t,b)=>t+b.stake,0);
-    const what=[r.C?`${r.C} cover bet${r.C>1?'s':''}`:'',r.P?`${r.P} ${r.placed?'new ':''}pair${r.P>1?'s':''} of ${r.req}`:''].filter(Boolean).join(' + ');
+    const ps=r.bets.filter(b=>b.group==='safe').length/2, pr=r.bets.filter(b=>b.group==='risky').length/2;
+    const what=[r.C?`${r.C} cover bet${r.C>1?'s':''}`:'',ps?`${ps} safe pair${ps>1?'s':''}`:'',pr?`${pr} risky pair${pr>1?'s':''}`:''].filter(Boolean).join(' + ')+(r.P?` (${r.P} of ${r.req} ${r.placed?'new ':''}pairs)`:'');
     return `<div class="card plan">
       <div class="m-top"><div><h3>${i+1}. ${head}</h3><div class="meta">${esc(fmtTime(m.time))} · ${what} · ${fmt(staked)} staked</div></div>
       <button class="btn pri" data-act="place" data-id="${m.id}"${nOn?'':' disabled'}>${nOn===r.bets.length?'Mark bets placed':`Mark ${nOn} of ${r.bets.length} bets placed`}</button></div>
@@ -633,7 +662,7 @@ function renderPlanner(){
       <div><div class="muted" style="font-size:13px;margin-bottom:6px">1. Make these transfers first${r.transfers.length?` (${r.transfers.length})`:''}</div>${xf}</div>
       <div><div class="muted" style="font-size:13px;margin-bottom:6px">2. Then place these bets. Untick any bet you didn't place: only ticked bets are recorded. If an account can't bet on this match at all, press Can't place and the plan picks another account.</div>
       <div class="tbl-wrap card"><table><thead><tr><th class="chk"><input type="checkbox" data-chk-all="${m.id}"${nOn===r.bets.length?' checked':''} aria-label="Tick all"></th><th>Account</th><th>Bet on</th><th class="r">Stake</th><th></th></tr></thead><tbody>${bets}</tbody></table></div></div>
-      ${skipped}
+      ${skipped}${riskyToggle}
       ${r.P?`<div class="kv"><div><span>Locked-in profit from new pairs </span><b class="${profit>=0?'g':'x'}">${fmt(profit,true)}</b></div><div><span>fees </span><b>${fmt(feeTot)}</b></div><div><span>net </span><b class="${profit-feeTot>=0?'g':'x'}">${fmt(profit-feeTot,true)}</b></div></div>`:`<div class="kv"><div><span>fees </span><b>${fmt(feeTot)}</b></div></div>`}
     </div>`}).join('');
   const leftRows=S.accounts.map(a=>`<tr><td>${esc(a.name)}</td><td class="r num">${fmt(a.balance||0)}</td><td class="r num">${fmt(left[a.id]??0)}</td></tr>`).join('');
@@ -788,6 +817,7 @@ document.addEventListener('click',e=>{
       xfersOf(m).push({from,to,amount:r2(fromDisp(v))});
     }
     markDirty();renderAll();scrollTo(0,y);return}
+  if(act==='norisky'){const m=S.matches.find(x=>x.id===id);if(!m)return;m.noRisky=!m.noRisky;markDirty();renderAll();scrollTo(0,y);return}
   if(act==='flag'){const a=accById(id);if(!a)return;a.flagged=!a.flagged;addLog(`${a.flagged?'Flagged':'Unflagged'} ${a.name} as risky`);markDirty();renderAll();scrollTo(0,y);return}
   if(act==='skip'||act==='unskip'){
     const m=S.matches.find(x=>x.id===id);if(!m)return;const acc=b.dataset.acc;
