@@ -258,6 +258,16 @@ const isUnticked=(m,acc)=>Array.isArray(m.unticked)&&m.unticked.includes(acc);
 const isUSD=()=>S.settings.currency==='USD';
 const rate=()=>(+S.settings.rate>0?+S.settings.rate:93);
 const feeInr=()=>r2((+S.settings.feeUsd||0)*rate());
+/* raising a planned transfer = the sender earned that extra (untracked) unless you switch it off */
+const extraOf=t=>t&&t.base!=null&&t.earned!==false?Math.max(0,r2(t.amount-t.base)):0;
+function sendXfer(t,fee){
+  const f=accById(t.from),to=accById(t.to);if(!f||!to)return 0;
+  const extra=extraOf(t);
+  if(extra){f.balance=r2(f.balance+extra);addLog(`Found ${fmt(extra)} extra in ${f.name} (earned, sent on to ${to.name})`)}
+  f.balance=r2(f.balance-t.amount-fee);to.balance=r2(to.balance+t.amount);S.feesPaid=r2((S.feesPaid||0)+fee);
+  addLog(`Sent ${fmt(t.amount)} from ${f.name} to ${to.name} (+${fmt(fee)} fee)`);
+  return extra;
+}
 const minXfer=()=>Math.max(0,+S.settings.minXfer||0); // smallest amount one transfer may send, in INR (0 = any)
 const toDisp=inr=>isUSD()?inr/rate():inr;
 const fromDisp=v=>isUSD()?v*rate():v;
@@ -489,7 +499,7 @@ function plan(){
       // the user's own transfers replace the suggested ones; unticked bets are not paid for
       const nb={...bal};
       if(Array.isArray(m.xfers)){res.suggested=res.transfers;res.transfers=m.xfers.filter(t=>accById(t.from)&&accById(t.to)&&t.amount>0);res.custom=true}
-      for(const t of res.transfers){nb[t.from]-=t.amount+fee;nb[t.to]+=t.amount}
+      for(const t of res.transfers){nb[t.from]-=t.amount+fee-extraOf(t);nb[t.to]+=t.amount}
       for(const x of res.bets)if(!off.includes(x))nb[x.accountId]-=x.stake;
       res.newBal=nb;
       res.neg=ids.filter(id=>nb[id]< -0.004).map(id=>({id,amt:-nb[id]}));
@@ -687,8 +697,8 @@ function renderPlanner(){
     const opts=sel=>S.accounts.map(a=>`<option value="${a.id}"${a.id===sel?' selected':''}>${esc(a.name||'(unnamed)')}</option>`).join('');
     const firstBettor=r.bets[0]?.accountId;
     const done=m.doneXfers||[];
-    const doneRows=done.map((t,k)=>`<li class="done"><input type="checkbox" class="xf-chk" checked data-act="xf-undo" data-id="${m.id}" data-i="${k}" aria-label="Untick to undo this transfer"><b>${esc(accById(t.from)?.name||'?')}</b><span class="arrow">→</span><b>${esc(accById(t.to)?.name||'?')}</b><span class="num">${fmt(t.amount)}</span><span class="muted">+ ${fmt(t.fee)} fee</span><span class="pill ok">Done</span></li>`).join('');
-    const xfRows=r.transfers.map((t,k)=>`<li><input type="checkbox" class="xf-chk" data-act="xf-done" data-id="${m.id}" data-i="${k}" aria-label="Tick when you have sent this"><b>${esc(accById(t.from)?.name)}</b><span class="arrow">→</span><b>${esc(accById(t.to)?.name)}</b><span class="cur-in xf-amt"><em>${sym()}</em><input type="number" step="0.01" min="0" inputmode="decimal" value="${inVal(t.amount)}" data-xf-m="${m.id}" data-xf-i="${k}" aria-label="Amount ${esc(accById(t.from)?.name)} sends to ${esc(accById(t.to)?.name)}"></span><span class="muted">+ ${fmt(fee)} fee</span><button class="btn sm ghost" data-act="xf-del" data-id="${m.id}" data-i="${k}">Remove</button></li>`).join('');
+    const doneRows=done.map((t,k)=>`<li class="done"><input type="checkbox" class="xf-chk" checked data-act="xf-undo" data-id="${m.id}" data-i="${k}" aria-label="Untick to undo this transfer"><b>${esc(accById(t.from)?.name||'?')}</b><span class="arrow">→</span><b>${esc(accById(t.to)?.name||'?')}</b><span class="num">${fmt(t.amount)}</span><span class="muted">+ ${fmt(t.fee)} fee</span>${t.extra?`<span class="muted">(${fmt(t.extra)} was earned)</span>`:''}<span class="pill ok">Done</span></li>`).join('');
+    const xfRows=r.transfers.map((t,k)=>`<li><input type="checkbox" class="xf-chk" data-act="xf-done" data-id="${m.id}" data-i="${k}" aria-label="Tick when you have sent this"><b>${esc(accById(t.from)?.name)}</b><span class="arrow">→</span><b>${esc(accById(t.to)?.name)}</b><span class="cur-in xf-amt"><em>${sym()}</em><input type="number" step="0.01" min="0" inputmode="decimal" value="${inVal(t.amount)}" data-xf-m="${m.id}" data-xf-i="${k}" aria-label="Amount ${esc(accById(t.from)?.name)} sends to ${esc(accById(t.to)?.name)}"></span><span class="muted">+ ${fmt(fee)} fee</span>${t.base!=null&&t.amount>t.base+0.004?`<button class="chip${t.earned!==false?' on':''}" data-act="xf-earned" data-id="${m.id}" data-i="${k}" title="Click to switch">${t.earned!==false?`+${fmt(t.amount-t.base)} is new money ${esc(accById(t.from)?.name)} earned`:`+${fmt(t.amount-t.base)} comes out of ${esc(accById(t.from)?.name)}'s balance`}</button>`:''}<button class="btn sm ghost" data-act="xf-del" data-id="${m.id}" data-i="${k}">Remove</button></li>`).join('');
     const addRow=`<li class="xf-add"><span class="muted" style="font-size:13px">Add a transfer:</span><select id="xf-from-${m.id}" aria-label="From">${opts(S.accounts.find(a=>!r.bets.some(b=>b.accountId===a.id))?.id)}</select><span class="arrow">→</span><select id="xf-to-${m.id}" aria-label="To">${opts(firstBettor)}</select><span class="cur-in xf-amt"><em>${sym()}</em><input type="number" step="0.01" min="0" inputmode="decimal" id="xf-amt-${m.id}" placeholder="amount" aria-label="Amount"></span><button class="btn sm" data-act="xf-add" data-id="${m.id}">Add</button></li>`;
     const negTot=r.neg?r.neg.reduce((t,n)=>t+n.amt,0):0;
     const negNote=r.neg&&r.neg.length?`<div class="note warn">With these transfers, ${r.neg.map(n=>`<b>${esc(accById(n.id)?.name)}</b> is ${fmt(n.amt)} short`).join(', ')}. Did ${r.neg.length>1?'these accounts':'this account'} have that extra money (from winnings, cashback, or anything the tracker doesn't know about)? If yes, press Mark bets placed: the extra ${fmt(negTot)} is added to ${r.neg.length>1?'their balances':'its balance'} first, so nothing goes below zero. If no, change the transfers.</div>`:'';
@@ -809,7 +819,7 @@ document.addEventListener('change',e=>{
   const xi=e.target.dataset.xfI;
   if(xi!=null){const m=S.matches.find(x=>x.id===e.target.dataset.xfM);if(!m)return;
     const xs=xfersOf(m),v=+e.target.value;
-    if(v>0)xs[+xi].amount=r2(fromDisp(v));else xs.splice(+xi,1);
+    if(v>0){const t=xs[+xi];if(t.base==null)t.base=t.amount;t.amount=r2(fromDisp(v))}else xs.splice(+xi,1);
     const y=scrollY;markDirty();renderAll();scrollTo(0,y);return}
   // re-render after a field is committed, so team names in labels update
   if(e.target.dataset.match&&(e.target.dataset.f==='teamA'||e.target.dataset.f==='teamB'))refreshLight();
@@ -844,7 +854,7 @@ document.addEventListener('click',e=>{
     if(!confirmTwice(b,'place-'+id,neg.length?`Yes, they had ${fmt(extra)} extra: place`:`Confirm: ${r.transfers.length} transfer${r.transfers.length===1?'':'s'}, ${chosen.length} bets`))return;
     const fee=feeInr(),m=r.m;
     for(const n of neg){const a=accById(n.id);if(!a)continue;a.balance=r2(a.balance+n.amt);addLog(`Found ${fmt(n.amt)} extra in ${a.name} (not tracked before)`)}
-    for(const t of r.transfers){const f=accById(t.from),to=accById(t.to);f.balance=r2(f.balance-t.amount-fee);to.balance=r2(to.balance+t.amount);S.feesPaid=r2((S.feesPaid||0)+fee)}
+    for(const t of r.transfers)sendXfer(t,fee);
     for(const x of chosen){const a=accById(x.accountId);a.balance=r2(a.balance-x.stake)}
     for(const n of neg){const a=accById(n.id);if(a&&a.balance<0&&a.balance>-0.02)a.balance=0}
     const odds=side=>side==='A'?(r.st.oddsA??+m.oddsA):(r.st.oddsB??+m.oddsB);
@@ -857,21 +867,23 @@ document.addEventListener('click',e=>{
     addLog(`${was?'Added':'Placed'} ${chosen.length} bet${chosen.length>1?'s':''} on ${teamName(m,'A')} vs ${teamName(m,'B')} (${cA} on ${teamName(m,'A')}, ${cB} on ${teamName(m,'B')}; ${fmt(chosen.reduce((t,x)=>t+x.stake,0))} staked, ${r.transfers.length} transfers)${chosen.length<r.bets.length?`, ${r.bets.length-chosen.length} unticked`:''}`);
     delete m.unticked;delete m.doneXfers;
     renderAll();scrollTo(0,y);save();return}
+  if(act==='xf-earned'){
+    const m=S.matches.find(x=>x.id===id);const t=m&&Array.isArray(m.xfers)&&m.xfers[+b.dataset.i];if(!t)return;
+    t.earned=t.earned===false;markDirty();renderAll();scrollTo(0,y);save();return}
   if(act==='xf-done'||act==='xf-undo'){
     const m=S.matches.find(x=>x.id===id);if(!m)return;const k=+b.dataset.i,fee=feeInr();
     if(act==='xf-done'){
       const r=lastPlan.find(x=>x.m.id===id);const t=r&&r.transfers[k];if(!t){b.checked=false;return}
-      const f=accById(t.from),to=accById(t.to);
-      f.balance=r2(f.balance-t.amount-fee);to.balance=r2(to.balance+t.amount);S.feesPaid=r2((S.feesPaid||0)+fee);
-      m.doneXfers=(m.doneXfers||[]).concat([{from:t.from,to:t.to,amount:t.amount,fee,at:new Date().toISOString()}]);
+      const extra=sendXfer(t,fee);
+      m.doneXfers=(m.doneXfers||[]).concat([{from:t.from,to:t.to,amount:t.amount,fee,extra,base:t.base,earned:t.earned,custom:Array.isArray(m.xfers),at:new Date().toISOString()}]);
       if(Array.isArray(m.xfers)){const i=m.xfers.findIndex(x=>x.from===t.from&&x.to===t.to&&Math.abs(x.amount-t.amount)<0.005);if(i>=0)m.xfers.splice(i,1)}
-      addLog(`Sent ${fmt(t.amount)} from ${f.name} to ${to.name} (+${fmt(fee)} fee)`);
     }else{
       const t=(m.doneXfers||[])[k];if(!t)return;
       const f=accById(t.from),to=accById(t.to);
       if(to&&(+to.balance||0)<t.amount-0.004){b.checked=true;const li=b.closest('li');li.querySelector('.pill').textContent=`Can't undo: ${to.name} already used it`;return}
-      if(f)f.balance=r2(f.balance+t.amount+t.fee);if(to)to.balance=r2(to.balance-t.amount);S.feesPaid=r2(Math.max(0,(S.feesPaid||0)-t.fee));
+      if(f)f.balance=r2(f.balance+t.amount+t.fee-(t.extra||0));if(to)to.balance=r2(to.balance-t.amount);S.feesPaid=r2(Math.max(0,(S.feesPaid||0)-t.fee));
       m.doneXfers.splice(k,1);
+      if(Array.isArray(m.xfers))m.xfers.push({from:t.from,to:t.to,amount:t.amount,...(t.base!=null?{base:t.base,earned:t.earned}:{})});
       addLog(`Undid transfer of ${fmt(t.amount)} from ${f?f.name:'?'} to ${to?to.name:'?'}`);
     }
     renderAll();scrollTo(0,y);save();return}
@@ -881,13 +893,13 @@ document.addEventListener('click',e=>{
     const incoming=r.transfers.filter(t=>t.to===acc);
     // who would go below zero if we do only this bet and its transfers now
     const after={};const add=(id,v)=>after[id]=(after[id]??(+accById(id)?.balance||0))+v;
-    for(const t of incoming){add(t.from,-(t.amount+fee));add(t.to,t.amount)}
+    for(const t of incoming){add(t.from,-(t.amount+fee)+extraOf(t));add(t.to,t.amount)}
     add(acc,-x.stake);
     const neg=Object.entries(after).filter(([,v])=>v< -0.004).map(([id,v])=>({id,amt:r2(-v)})),extra=neg.reduce((t,n)=>t+n.amt,0);
     const lbl=neg.length?`Had ${fmt(extra)} extra? Place`:incoming.length?`Send ${incoming.length} + place?`:'Confirm?';
     if(!confirmTwice(b,'p1-'+id+acc,lbl))return;
     for(const n of neg){const q=accById(n.id);q.balance=r2(q.balance+n.amt);addLog(`Found ${fmt(n.amt)} extra in ${q.name} (not tracked before)`)}
-    for(const t of incoming){const f=accById(t.from),to=accById(t.to);f.balance=r2(f.balance-t.amount-fee);to.balance=r2(to.balance+t.amount);S.feesPaid=r2((S.feesPaid||0)+fee);addLog(`Sent ${fmt(t.amount)} from ${f.name} to ${to.name} (+${fmt(fee)} fee)`)}
+    for(const t of incoming)sendXfer(t,fee);
     a.balance=r2(a.balance-x.stake);if(a.balance<0&&a.balance>-0.02)a.balance=0;
     if(Array.isArray(m.xfers))m.xfers=m.xfers.filter(t=>t.to!==acc);
     if(Array.isArray(m.unticked))m.unticked=m.unticked.filter(q=>q!==acc);
