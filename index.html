@@ -456,9 +456,15 @@ function groupPick(bal,pool,n,big,pref={}){
   return out;
 }
 function tryAssign(bal,n,st,fee,pool,ids,pref){
-  // keep the last plan's choices when the money allows it, else plan from scratch
-  if(pref){const k=assignWith(bal,n,st,fee,pool,ids,pref);if(!k.fail)return k}
-  return assignWith(bal,n,st,fee,pool,ids,{});
+  // Keep the last plan's choices only if that costs no extra transfers; otherwise use the
+  // fresh plan (richest accounts on the bigger stake), so old choices never stick when balances change.
+  const fresh=assignWith(bal,n,st,fee,pool,ids,{});
+  if(!pref)return fresh;
+  const kept=assignWith(bal,n,st,fee,pool,ids,pref);
+  if(kept.fail)return fresh;if(fresh.fail)return kept;
+  const cost=x=>[x.transfers.length,x.transfers.reduce((t,y)=>t+y.amount,0)];
+  const [kc,ka]=cost(kept),[fc,fa]=cost(fresh);
+  return kc<fc||(kc===fc&&ka<=fa+0.01)?kept:fresh;
 }
 function assignWith(bal,n,st,fee,pool,ids,pref){
   const picks=groupPick(bal,pool,n,st.bigSide,pref);
