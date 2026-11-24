@@ -478,11 +478,18 @@ function assignWith(bal,n,st,fee,pool,ids,pref){
 const liveBets=m=>m.bets.filter(b=>betStatus(m,b)==='open');
 /* stakes for adding bets to a match that already has some: copy what was placed */
 function placedStakes(m){
-  const any=side=>m.bets.find(b=>b.side===side);
+  /* New bets copy the usual stake and odds on each side: the most common one among the bets
+     already placed (the match's planned stake wins a tie), so editing one bet never changes the rest. */
   const base=stakes(m);
-  const a=any('A'),b=any('B');
-  const sA=a?a.stake:base&&base.stakeA, sB=b?b.stake:base&&base.stakeB;
-  const oA=a?a.odds:+m.oddsA, oB=b?b.odds:+m.oddsB;
+  const usual=(side,key,fallback)=>{
+    const c=new Map();for(const b of m.bets)if(b.side===side&&b[key]>0)c.set(b[key],(c.get(b[key])||0)+1);
+    if(!c.size)return fallback;
+    const top=Math.max(...c.values());
+    if(fallback>0&&c.get(fallback)===top)return fallback;
+    return [...c.entries()].find(([,n])=>n===top)[0];
+  };
+  const sA=usual('A','stake',base&&base.stakeA), sB=usual('B','stake',base&&base.stakeB);
+  const oA=usual('A','odds',+m.oddsA), oB=usual('B','odds',+m.oddsB);
   if(!(sA>0&&sB>0&&oA>1&&oB>1))return null;
   return Object.assign(outcome(sA,sB,oA,oB),{oddsA:oA,oddsB:oB});
 }
