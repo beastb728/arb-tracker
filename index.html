@@ -145,6 +145,9 @@ button.pill.safe{border:1px solid var(--line)}
 .bet-add{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 12px;border:1px dashed var(--line);border-radius:8px;margin-top:8px}
 .bet-add select{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:7px;padding:6px 8px;max-width:220px}
 .bet-add .cur-in{width:130px}
+.profit-split td,.profit-split th{padding:8px 12px}
+.profit-split tr.ps-total td{border-top:1px solid var(--line);font-weight:700}
+.profit-split tr.ps-risky td:first-child{color:var(--bad)}
 .row-acts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
 .quick-acc{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .quick-acc>span{flex:1 1 220px}
@@ -351,7 +354,17 @@ function sideTable(m){
       <span class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" data-ba="stake" placeholder="stake" aria-label="Stake"></span>
       <span class="muted">@</span><input type="number" step="0.01" min="1" data-ba="odds" value="${esc(m.oddsA)}" aria-label="Odds" style="width:80px">
       <button class="btn sm pri" data-act="bet-add" data-id="${m.id}">Add bet</button></div>`;
-    summary=`<div class="kv">${live.length?`<div>${pf('A')}</div><div>${pf('B')}</div>`:''}</div>`+evenHint+addForm+
+    // profit if each team wins, for safe accounts, risky accounts, and all together.
+    // If every risky bet is voided (stake refunded), the Safe row is what's left.
+    const grp=list=>{const t=list.reduce((x,b)=>x+b.stake,0);const r=side=>list.filter(b=>b.side===side).reduce((x,b)=>x+b.stake*b.odds,0)-t;return{n:list.length,A:r('A'),B:r('B'),min:Math.min(r('A'),r('B'))}};
+    const safeL=live.filter(b=>!accRisky(b.accountId)),riskyL=live.filter(b=>accRisky(b.accountId));
+    const cell=v=>`<td class="r num" style="color:var(${v>=0?'--good':'--bad'})">${fmt(v,true)}</td>`;
+    const prow=(label,g,cls)=>`<tr class="${cls}"><td>${label} <span class="muted">(${g.n} bet${g.n===1?'':'s'})</span></td>${cell(g.A)}${cell(g.B)}${cell(g.min)}</tr>`;
+    const S0=grp(safeL),R0=grp(riskyL),T0=grp(live);
+    const profitTbl=live.length?`<div class="tbl-wrap"><table class="profit-split"><thead><tr><th></th><th class="r">If ${esc(teamName(m,'A'))} win</th><th class="r">If ${esc(teamName(m,'B'))} win</th><th class="r">Worst case</th></tr></thead><tbody>
+      ${prow('Safe accounts',S0,'ps-safe')}${riskyL.length?prow('⚠ Risky accounts',R0,'ps-risky'):''}${prow('All together',T0,'ps-total')}</tbody></table></div>
+      ${riskyL.length?`<div class="note ${S0.min>=0?'good':'bad'}">If every risky bet gets voided and refunded, you're left with the safe bets: <b class="num">${fmt(S0.A,true)}</b> if ${esc(teamName(m,'A'))} win, <b class="num">${fmt(S0.B,true)}</b> if ${esc(teamName(m,'B'))} win.</div>`:''}`:'';
+    summary=profitTbl+evenHint+addForm+
       (nA!==nB?`<div class="note warn">Unhedged: ${Math.abs(nA-nB)} more bet${Math.abs(nA-nB)>1?'s':''} on ${esc(teamName(m,nA>nB?'A':'B'))} than on ${esc(teamName(m,nA>nB?'B':'A'))}. The Planner suggests a cover bet.</div>`:'');
   }else if(m.status==='settled')summary=`<div class="kv"><div><span>Match result </span><b class="num ${(m.profit||0)>=0?'g':'x'}">${fmt(m.profit||0,true)}</b></div></div>`;
   return `<div class="tbl-wrap"><table class="sides"><thead><tr><th>On ${esc(teamName(m,'A'))}</th><th>On ${esc(teamName(m,'B'))}</th></tr></thead><tbody>${rows}</tbody><tfoot><tr>${foot}</tr></tfoot></table></div>${summary}`;
