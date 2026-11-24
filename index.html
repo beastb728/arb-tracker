@@ -327,6 +327,19 @@ function betCell(m,b,i){
   const btn=live?`<button class="btn sm ghost" data-act="bet-edit" data-id="${m.id}" data-bet="${i}">Edit</button><button class="btn sm ghost" data-act="void-bet" data-id="${m.id}" data-bet="${i}" title="The bookie voided it: refund and mark the account risky">Void</button><button class="btn sm ghost danger" data-act="bet-del" data-id="${m.id}" data-bet="${i}" title="Entered by mistake: remove and refund the stake">Remove</button>`:'';
   return `<td${s==='void'?' class="voided"':''}><div class="bet-cell"><b>${esc(a?a.name:b.accountName)}</b>${riskBadge(b.accountId)}<span class="num">${fmt(b.stake)} @ ${esc(b.odds)}</span>${pill}${btn}</div></td>`;
 }
+/* profit if each team wins, for safe accounts, risky accounts, and all together.
+   If every risky bet is voided (stake refunded), the Safe row is what's left. */
+function profitSplit(m,list){
+  if(!list.length)return '';
+  const grp=l=>{const t=l.reduce((x,b)=>x+b.stake,0);const r=side=>l.filter(b=>b.side===side).reduce((x,b)=>x+b.stake*b.odds,0)-t;return{n:l.length,A:r('A'),B:r('B'),min:Math.min(r('A'),r('B'))}};
+  const safeL=list.filter(b=>!accRisky(b.accountId)),riskyL=list.filter(b=>accRisky(b.accountId));
+  const cell=v=>`<td class="r num" style="color:var(${v>=0?'--good':'--bad'})">${fmt(v,true)}</td>`;
+  const prow=(label,g,cls)=>`<tr class="${cls}"><td>${label} <span class="muted">(${g.n} bet${g.n===1?'':'s'})</span></td>${cell(g.A)}${cell(g.B)}${cell(g.min)}</tr>`;
+  const S0=grp(safeL),R0=grp(riskyL),T0=grp(list);
+  return `<div class="tbl-wrap"><table class="profit-split"><thead><tr><th></th><th class="r">If ${esc(teamName(m,'A'))} win</th><th class="r">If ${esc(teamName(m,'B'))} win</th><th class="r">Worst case</th></tr></thead><tbody>
+    ${prow('Safe accounts',S0,'ps-safe')}${riskyL.length?prow('⚠ Risky accounts',R0,'ps-risky'):''}${prow('All together',T0,'ps-total')}</tbody></table></div>
+    ${riskyL.length?`<div class="note ${S0.min>=0?'good':'bad'}">If every risky bet gets voided and refunded, you're left with the safe bets: <b class="num">${fmt(S0.A,true)}</b> if ${esc(teamName(m,'A'))} win, <b class="num">${fmt(S0.B,true)}</b> if ${esc(teamName(m,'B'))} win.</div>`:''}`;
+}
 /* every account on its team's column; live bets first, voided ones last */
 function sideTable(m){
   const col=side=>m.bets.map((b,i)=>({b,i})).filter(x=>x.b.side===side)
@@ -354,16 +367,7 @@ function sideTable(m){
       <span class="cur-in"><em>${sym()}</em><input type="number" step="0.01" min="0" data-ba="stake" placeholder="stake" aria-label="Stake"></span>
       <span class="muted">@</span><input type="number" step="0.01" min="1" data-ba="odds" value="${esc(m.oddsA)}" aria-label="Odds" style="width:80px">
       <button class="btn sm pri" data-act="bet-add" data-id="${m.id}">Add bet</button></div>`;
-    // profit if each team wins, for safe accounts, risky accounts, and all together.
-    // If every risky bet is voided (stake refunded), the Safe row is what's left.
-    const grp=list=>{const t=list.reduce((x,b)=>x+b.stake,0);const r=side=>list.filter(b=>b.side===side).reduce((x,b)=>x+b.stake*b.odds,0)-t;return{n:list.length,A:r('A'),B:r('B'),min:Math.min(r('A'),r('B'))}};
-    const safeL=live.filter(b=>!accRisky(b.accountId)),riskyL=live.filter(b=>accRisky(b.accountId));
-    const cell=v=>`<td class="r num" style="color:var(${v>=0?'--good':'--bad'})">${fmt(v,true)}</td>`;
-    const prow=(label,g,cls)=>`<tr class="${cls}"><td>${label} <span class="muted">(${g.n} bet${g.n===1?'':'s'})</span></td>${cell(g.A)}${cell(g.B)}${cell(g.min)}</tr>`;
-    const S0=grp(safeL),R0=grp(riskyL),T0=grp(live);
-    const profitTbl=live.length?`<div class="tbl-wrap"><table class="profit-split"><thead><tr><th></th><th class="r">If ${esc(teamName(m,'A'))} win</th><th class="r">If ${esc(teamName(m,'B'))} win</th><th class="r">Worst case</th></tr></thead><tbody>
-      ${prow('Safe accounts',S0,'ps-safe')}${riskyL.length?prow('⚠ Risky accounts',R0,'ps-risky'):''}${prow('All together',T0,'ps-total')}</tbody></table></div>
-      ${riskyL.length?`<div class="note ${S0.min>=0?'good':'bad'}">If every risky bet gets voided and refunded, you're left with the safe bets: <b class="num">${fmt(S0.A,true)}</b> if ${esc(teamName(m,'A'))} win, <b class="num">${fmt(S0.B,true)}</b> if ${esc(teamName(m,'B'))} win.</div>`:''}`:'';
+    const profitTbl=profitSplit(m,live);
     summary=profitTbl+evenHint+addForm+
       (nA!==nB?`<div class="note warn">Unhedged: ${Math.abs(nA-nB)} more bet${Math.abs(nA-nB)>1?'s':''} on ${esc(teamName(m,nA>nB?'A':'B'))} than on ${esc(teamName(m,nA>nB?'B':'A'))}. The Planner suggests a cover bet.</div>`:'');
   }else if(m.status==='settled')summary=`<div class="kv"><div><span>Match result </span><b class="num ${(m.profit||0)>=0?'g':'x'}">${fmt(m.profit||0,true)}</b></div></div>`;
@@ -766,6 +770,7 @@ function renderPlanner(){
       <div><div class="muted" style="font-size:13px;margin-bottom:6px">2. Then place these bets. Press Placed ✓ on each bet as you place it: it's recorded straight away (with its transfers) and the rest of the plan updates. Or place them all, untick any you didn't place, and press Mark bets placed. If an account can't bet on this match at all, press Can't place and the plan picks another account.</div>
       <div class="tbl-wrap card"><table><thead><tr><th class="chk"><input type="checkbox" data-chk-all="${m.id}"${nOn===r.bets.length?' checked':''} aria-label="Tick all"></th><th>Account</th><th>Bet on</th><th class="r">Has now</th><th class="r">Stake</th><th></th></tr></thead><tbody>${bets}</tbody></table></div></div>
       ${skipped}${riskyToggle}
+      <div><div class="muted" style="font-size:13px;margin-bottom:6px">${r.placed?'Whole match once these ticked bets are placed (bets already placed + these)':'Profit once these ticked bets are placed'}</div>${profitSplit(m,(r.placed?liveBets(m):[]).concat(r.bets.filter(isOn).map(x=>({accountId:x.accountId,side:x.side,stake:x.stake,odds:x.side==='A'?(r.st.oddsA??+m.oddsA):(r.st.oddsB??+m.oddsB)}))))}</div>
       ${r.P?`<div class="kv"><div><span>Locked-in profit from new pairs </span><b class="${profit>=0?'g':'x'}">${fmt(profit,true)}</b></div><div><span>fees </span><b>${fmt(feeTot)}</b></div><div><span>net </span><b class="${profit-feeTot>=0?'g':'x'}">${fmt(profit-feeTot,true)}</b></div></div>`:`<div class="kv"><div><span>fees </span><b>${fmt(feeTot)}</b></div></div>`}
     </div>`}).join('');
   const leftRows=S.accounts.map(a=>`<tr><td>${esc(a.name)}</td><td class="r num">${fmt(a.balance||0)}</td><td class="r num">${fmt(left[a.id]??0)}</td></tr>`).join('');
